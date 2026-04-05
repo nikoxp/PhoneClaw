@@ -20,15 +20,8 @@
 
 ## 演示视频
 
-<div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
-  <div style="text-align: center; flex: 1; min-width: 280px; max-width: 480px;">
-    <video src="https://github.com/user-attachments/assets/be57bb84-ef68-406f-9dd2-5e214db1b191" width="100%" height="auto" controls autoplay loop muted></video>
-    <p style="color: gray; font-size: 12px;">演示 1</p>
-  </div>
-  <div style="text-align: center; flex: 1; min-width: 280px; max-width: 480px;">
-    <video src="https://github.com/user-attachments/assets/ad542896-4f2e-45aa-91fc-be58c0365ca6" width="100%" height="auto" controls autoplay loop muted></video>
-    <p style="color: gray; font-size: 12px;">演示 2</p>
-  </div>
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/be57bb84-ef68-406f-9dd2-5e214db1b191" width="100%" height="auto" controls autoplay loop muted></video>
 </div>
 
 
