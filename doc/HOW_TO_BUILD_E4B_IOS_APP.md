@@ -50,12 +50,12 @@ sudo gem install cocoapods
    - Product Name: PhoneClaw
    - Interface: SwiftUI
    - Language: Swift
-   - 保存到: /Users/zxw/AITOOL/phoneclaw/
+   - 保存到: ./
 ```
 
 ### Step 2：添加 CocoaPods 依赖
 ```bash
-cd /Users/zxw/AITOOL/phoneclaw/
+cd ./
 
 # 初始化 Podfile
 pod init

@@ -1,83 +1,135 @@
-# PhoneClaw — 操作指南（你现在就能做的事）
+# PhoneClaw
 
-## ✅ 已完成
+An on-device AI Agent for iPhone, powered by **Gemma 4** and **MLX** (Metal GPU). Fully offline — no network, no cloud, no privacy leaks.
 
-| 项目 | 状态 |
-|------|------|
-| Xcode 项目 (PhoneClaw.xcworkspace) | ✅ 已创建 |
-| MediaPipe SDK (CocoaPods) | ✅ 已安装 v0.10.33 |
-| E4B 模型 (.litertlm, 3.4GB) | ✅ 已下载到 Models/ |
-| LLM 推理层 (LocalLLMService.swift) | ✅ 基于 MediaPipe API |
-| Agent 引擎 (AgentEngine.swift) | ✅ 双轮推理 + Skill 执行 |
-| Skills (剪贴板读/写, 设备信息) | ✅ 3 个 Skill |
-| 聊天 UI (ContentView.swift) | ✅ SwiftUI 气泡界面 |
-| 内存权限 (entitlements) | ✅ increased-memory-limit |
+## Features
 
-## 📱 部署到 iPhone 的 3 步
+- **Fully Offline** — runs entirely on-device via MLX Metal GPU inference
+- **Multimodal** — supports image input (vision language model)
+- **File-driven Skill System** — define capabilities in plain `SKILL.md` files, no code changes needed
+- **Multi-round Tool Chain** — agent can call multiple tools in sequence (up to 10 rounds)
+- **Memory-safe** — dynamic history depth, GPU cache management for 6 GB jetsam limit
+- **In-app Skill Editor** — view, edit, and hot-reload SKILL.md directly on device
 
-### Step 1：打开项目
+## Project Structure
+
+```
+PhoneClaw/
+├── App/PhoneClawApp.swift          ← Entry point
+├── Agent/AgentEngine.swift         ← Agent loop (tool detection, multi-round chain)
+├── LLM/
+│   ├── LLMEngine.swift             ← Protocol definition
+│   ├── MLXLocalLLMService.swift    ← MLX GPU inference (Gemma 4)
+│   ├── PromptBuilder.swift         ← Gemma 4 chat template + function calling
+│   └── MLX/                        ← Custom Gemma 4 VLM implementation (9 files)
+├── Skills/
+│   ├── Skills.swift                ← Data models
+│   ├── SkillLoader.swift           ← SKILL.md parser (YAML frontmatter + body)
+│   └── ToolRegistry.swift          ← Native iOS API tool registry
+├── UI/
+│   ├── ContentView.swift           ← Chat UI with skill progress cards
+│   ├── ChatModels.swift            ← UI data models
+│   ├── SkillsManagerView.swift     ← Skills management panel
+│   ├── ConfigurationsView.swift    ← Model parameter settings
+│   └── Theme.swift                 ← Design system
+├── Assets.xcassets/
+├── Info.plist
+└── PhoneClaw.entitlements          ← increased-memory-limit
+```
+
+## Requirements
+
+- Xcode 16+
+- iOS 17.0+
+- iPhone with Apple Silicon (A17 Pro or later recommended for Gemma 4 E2B/E4B)
+- CocoaPods (`gem install cocoapods`)
+
+## Model
+
+This project uses **Gemma 4 E2B** (4-bit quantized, MLX format). Download the model directory and place it at `Models/gemma-4-e2b-it-4bit/` in the project root.
+
+You can download from Hugging Face:
+```
+mlx-community/gemma-4-2b-it-4bit
+```
+
+## Getting Started
+
+### 1. Install dependencies
+
 ```bash
-open /Users/zxw/AITOOL/phoneclaw/PhoneClaw.xcworkspace
-```
-⚠️ 必须打开 .xcworkspace，不是 .xcodeproj
-
-### Step 2：放入模型文件
-模型已下载到：
-```
-/Users/zxw/AITOOL/phoneclaw/Models/gemma-4-E4B-it.litertlm
+pod install
 ```
 
-在 Xcode 中：
-1. 左侧 Navigator → 右键 PhoneClaw → "Add Files to PhoneClaw..."
-2. 选择 `Models/gemma-4-E4B-it.litertlm`
-3. ✅ 勾选 "Copy items if needed"
-4. ✅ 确认 Target: PhoneClaw 被选中
-5. 在 Build Phases → Copy Bundle Resources 确认文件在内
+### 2. Open the workspace
 
-### Step 3：签名并编译
-1. Xcode 左侧选 PhoneClaw 项目 → Signing & Capabilities
-2. Team: 选你的 Apple ID
-3. Bundle Identifier: 改成唯一的（如 com.zxw.phoneclaw）
-4. USB 连接 iPhone
-5. 顶部选择你的 iPhone 设备
-6. **Command + R** 编译运行
-
-首次安装需要在 iPhone 上：
-设置 → 通用 → VPN与设备管理 → 信任你的开发者证书
-
-## 🏗️ 项目结构
-```
-phoneclaw/
-├── PhoneClaw.xcworkspace     ← 打开这个！
-├── PhoneClaw/
-│   ├── App/PhoneClawApp.swift          ← 入口
-│   ├── UI/ContentView.swift            ← 聊天界面
-│   ├── Agent/AgentEngine.swift         ← Agent 核心循环
-│   ├── LLM/LocalLLMService.swift       ← E4B 推理（MediaPipe）
-│   ├── LLM/PromptBuilder.swift         ← Prompt 模板
-│   ├── Skills/Skills.swift             ← 剪贴板/设备 Skills
-│   ├── Info.plist
-│   └── PhoneClaw.entitlements          ← 内存权限
-├── Models/
-│   └── gemma-4-E4B-it.litertlm        ← E4B 模型 3.4GB
-├── Pods/                               ← MediaPipe SDK
-├── Podfile
-└── project.yml
+```bash
+open PhoneClaw.xcworkspace
 ```
 
-## ⚡ 测试指令
-App 运行后，输入以下试试：
-- "看看我的剪贴板有什么"  → 调用 clipboard_read
-- "我的手机信息"          → 调用 device_info
-- "帮我复制：Hello"       → 调用 clipboard_write
-- "你好"                  → 直接对话（不调用 Skill）
+> ⚠️ Always open `.xcworkspace`, not `.xcodeproj`
 
-## 🔄 关于 LiteRT-LM 原生方案
+### 3. Sign and run
 
-你说得对，Gallery App 用的是 LiteRT-LM C API + .litertlm，不是 MediaPipe。
-当前代码用 MediaPipe（内部也封装了 LiteRT），作为先跑通的路径。
+1. In Xcode: select the **PhoneClaw** target → **Signing & Capabilities**
+2. Set your **Team** (Apple ID)
+3. Change **Bundle Identifier** to something unique (e.g. `com.yourname.phoneclaw`)
+4. Connect your iPhone via USB
+5. Press **⌘R**
 
-后续升级路径：
-1. LiteRT-LM C API 头文件已在: LiteRT-LM/c/engine.h  
-2. iOS 预编译 GPU 库已在: LiteRT-LM/prebuilt/ios_arm64/
-3. 等 Google 发布 Swift API 后直接切换
+First install requires trusting the certificate on iPhone:  
+**Settings → General → VPN & Device Management → Trust**
+
+## Built-in Skills
+
+| Skill | Tools |
+|-------|-------|
+| Clipboard | `clipboard-read`, `clipboard-write` |
+| Device | `device-info`, `device-name`, `device-model`, `device-system-version`, `device-memory`, `device-processor-count` |
+| Text | `calculate-hash`, `text-reverse` |
+
+## Adding Custom Skills
+
+Create a new directory under `ApplicationSupport/PhoneClaw/skills/<skill-name>/SKILL.md`:
+
+```yaml
+---
+name: MySkill
+description: 'What this skill does'
+version: "1.0.0"
+icon: star
+disabled: false
+
+triggers:
+  - keyword1
+
+allowed-tools:
+  - my-tool-name
+
+examples:
+  - query: "example user query"
+    scenario: "what happens"
+---
+
+# Skill Instructions
+
+Tell the model what to do and how to call the tools.
+```
+
+Then register the native implementation in `ToolRegistry.swift`.
+
+## Architecture
+
+```
+User Input
+  → PromptBuilder (Gemma 4 chat template)
+  → MLX GPU inference (streaming)
+  → Detect <tool_call>
+      ├── load_skill → inject SKILL.md body → re-infer
+      └── tool execution → ToolRegistry → iOS API → re-infer
+  → Final text response
+```
+
+## License
+
+MIT

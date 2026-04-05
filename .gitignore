@@ -27,11 +27,8 @@ build/
 .build/
 *.resolved
 
-# ─── LiteRT-LM 子模块（大二进制）──────────────────────────────────
-LiteRT-LM/build_ios/
-LiteRT-LM/build/
-_mediapipe-samples/
-_mlx-swift-lm/
+# ─── 构建产物 / 外部子目录 ────────────────────────────────────────
+LiteRT-LM/
 
 # ─── macOS 杂项 ───────────────────────────────────────────────────
 .DS_Store
