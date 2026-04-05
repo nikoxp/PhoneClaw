@@ -186,20 +186,6 @@ Tell the model when to call tools, how to structure arguments, and when to answe
 
 If this skill needs to call native iOS APIs, register the tool in `Skills/ToolRegistry.swift`.
 
-## Project Structure
-
-```
-PhoneClaw/
-├── App/                         # App entry point
-├── Agent/                       # Agent loop and multi-round tool calling
-├── LLM/                         # Local inference and prompt construction
-├── Skills/                      # Skill parsing, tool registry, data models
-├── UI/                          # Chat UI, skill management, settings
-├── Models/                      # Local model directory (gitignored)
-├── PhoneClaw.xcworkspace
-└── README.md
-```
-
 
 ## FAQ
 

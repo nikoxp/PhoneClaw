@@ -186,20 +186,6 @@ examples:
 
 如果这个 Skill 需要真正调用系统能力，再去 `Skills/ToolRegistry.swift` 注册对应工具。
 
-## 关键目录
-
-```
-PhoneClaw/
-├── App/                         # App 入口
-├── Agent/                       # Agent 循环与多轮工具调用
-├── LLM/                         # 本地推理与 Prompt 构建
-├── Skills/                      # Skill 解析、工具注册、数据模型
-├── UI/                          # 聊天界面、Skill 管理、配置页面
-├── Models/                      # 本地模型目录（默认不入库）
-├── PhoneClaw.xcworkspace
-└── README.md
-```
-
 
 ## 常见问题
 
