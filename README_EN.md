@@ -28,15 +28,27 @@ PhoneClaw is a local AI Agent that runs entirely on your iPhone. No internet con
 
 **Calendar**: Create calendar events using natural language — title, time, and location all supported.
 
+> "Schedule a meeting at Hightech Park tomorrow at 2pm"
+
 **Reminders**: Set time-based reminders that fire a system push notification exactly on schedule.
+
+> "Remind me tonight at 8 to send the file to my boss"
 
 **Contacts**: Save or update contacts with name, phone, company, email, and notes. Automatically deduped by phone number.
 
+> "Save Wang's number 13812345678, he's from Bytedance"
+
 **Clipboard**: Read and write the system clipboard. Useful as a data relay in multi-step tasks.
+
+> "Copy that text to the clipboard"
 
 **Device Info**: Query device name, OS version, available memory, processor count, and more.
 
+> "What's the device info for this phone?"
+
 **Text Tools**: Hash calculation, text reversal, and other basic text utilities.
+
+> "Calculate the MD5 of this text"
 
 
 ## Requirements
