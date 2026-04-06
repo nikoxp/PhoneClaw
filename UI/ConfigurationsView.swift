@@ -385,7 +385,10 @@ struct ConfigurationsView: View {
         case .checkingSource:
             modelBadge(localized("检查中", "Checking"))
         case .downloading(let completedFiles, let totalFiles, _):
-            modelBadge(localized("下载中 \(completedFiles)/\(totalFiles)", "Downloading \(completedFiles)/\(totalFiles)"))
+            downloadProgressBadge(
+                completedFiles: completedFiles,
+                totalFiles: totalFiles
+            )
         case .downloaded:
             modelBadge(localized("已下载", "Downloaded"), color: Theme.accentGreen)
         case .bundled:
@@ -412,6 +415,29 @@ struct ConfigurationsView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(color.opacity(0.14), in: Capsule())
+    }
+
+    private func downloadProgressBadge(
+        completedFiles: Int,
+        totalFiles: Int
+    ) -> some View {
+        let safeTotal = max(totalFiles, 1)
+        let value = Double(min(completedFiles, safeTotal))
+        return VStack(alignment: .trailing, spacing: 4) {
+            Text(localized(
+                "下载中 \(completedFiles)/\(totalFiles)",
+                "Downloading \(completedFiles)/\(totalFiles)"
+            ))
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.textTertiary)
+
+            ProgressView(value: value, total: Double(safeTotal))
+                .progressViewStyle(.linear)
+                .frame(width: 110)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Theme.textTertiary.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func modelStateDetail(_ state: ModelInstallState) -> String? {
