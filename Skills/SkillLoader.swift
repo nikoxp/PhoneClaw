@@ -53,6 +53,10 @@ struct SkillDefinition: Identifiable {
 // MARK: - Skill Loader
 
 class SkillLoader {
+    private static let skillAliases: [String: String] = [
+        "contacts_delete": "contacts",
+        "contacts-delete": "contacts"
+    ]
 
     let skillsDirectory: URL
     private var cache: [String: SkillDefinition] = [:]
@@ -84,6 +88,9 @@ class SkillLoader {
             guard FileManager.default.fileExists(atPath: skillFile.path) else { continue }
 
             let skillId = item.lastPathComponent
+            if Self.skillAliases[skillId] != nil {
+                continue
+            }
             if let def = loadDefinition(skillId: skillId, file: skillFile) {
                 cache[skillId] = def
                 results.append(def)
@@ -94,16 +101,17 @@ class SkillLoader {
 
     /// 完整加载 Skill（包括 body）— load_skill 时调用
     func loadBody(skillId: String) -> String? {
-        if let cached = cache[skillId], cached.body != nil {
+        let resolvedSkillId = canonicalSkillId(for: skillId)
+        if let cached = cache[resolvedSkillId], cached.body != nil {
             return cached.body
         }
         let skillFile = skillsDirectory
-            .appendingPathComponent(skillId, isDirectory: true)
+            .appendingPathComponent(resolvedSkillId, isDirectory: true)
             .appendingPathComponent("SKILL.md")
 
         guard let content = try? String(contentsOf: skillFile, encoding: .utf8) else { return nil }
         let body = parseBody(content)
-        cache[skillId]?.body = body
+        cache[resolvedSkillId]?.body = body
         return body
     }
 
@@ -134,12 +142,16 @@ class SkillLoader {
 
     /// 获取缓存的 SkillDefinition
     func getDefinition(_ skillId: String) -> SkillDefinition? {
-        cache[skillId]
+        cache[canonicalSkillId(for: skillId)]
     }
 
     /// 更新启用状态
     func setEnabled(_ skillId: String, enabled: Bool) {
-        cache[skillId]?.isEnabled = enabled
+        cache[canonicalSkillId(for: skillId)]?.isEnabled = enabled
+    }
+
+    func canonicalSkillId(for skillId: String) -> String {
+        Self.skillAliases[skillId] ?? skillId
     }
 
     // MARK: - 解析
@@ -502,49 +514,82 @@ class SkillLoader {
         ---
         name: Contacts
         name-zh: 通讯录
-        description: '创建或更新联系人。当用户要存号码、保存联系方式或补充联系人信息时使用。'
-        version: "1.0.0"
+        description: '查询、创建、更新或删除联系人。当用户要查电话、看联系方式、存号码、补充联系人信息或删除联系人时使用。'
+        version: "1.1.0"
         icon: person.crop.circle
         disabled: false
 
         triggers:
           - 联系人
           - 通讯录
+          - 查电话
+          - 联系电话
           - 存号码
           - 联系方式
+          - 删除联系人
 
         allowed-tools:
+          - contacts-search
           - contacts-upsert
+          - contacts-delete
 
         examples:
-          - query: "帮我存一下王总的电话 13812345678"
+          - query: "把王总电话 13812345678 添加到联系人"
             scenario: "新建或更新联系人"
+          - query: "检查下联系人张晓霞的电话多少"
+            scenario: "查询联系人电话"
+          - query: "把王总从联系人中删除"
+            scenario: "删除联系人"
         ---
 
-        # 联系人创建与更新
+        # 联系人查询与维护
 
-        你负责帮助用户创建或更新通讯录联系人。
+        你负责帮助用户查询、创建、更新或删除通讯录联系人。
 
         ## 可用工具
 
+        - **contacts-search**: 查询联系人
+          - `query`: 关键词，可用于模糊搜索
+          - `name`: 联系人姓名
+          - `phone`: 手机号
+          - `email`: 邮箱
+          - `identifier`: 联系人标识
         - **contacts-upsert**: 创建或更新联系人
           - `name`: 必填，联系人姓名
           - `phone`: 可选，手机号；如果提供，会优先按手机号查重
           - `company`: 可选，公司
           - `email`: 可选，邮箱
           - `notes`: 可选，备注
+        - **contacts-delete**: 删除联系人
+          - `query`: 关键词，可用于模糊搜索
+          - `name`: 联系人姓名
+          - `phone`: 手机号
+          - `email`: 邮箱
+          - `identifier`: 联系人标识
 
         ## 执行流程
 
-        1. 只有当用户明确要保存、更新联系人信息时才调用工具
-        2. 由你提取姓名、手机号、公司、邮箱、备注
-        3. 如果缺少 `name`，先简短追问
-        4. 工具成功后，直接告诉用户联系人已创建或已更新
+        1. 如果用户在查询电话、邮箱、联系方式，优先调用 `contacts-search`
+        2. 如果用户在删除、移除、删掉联系人，调用 `contacts-delete`
+        3. 如果用户在保存、添加或更新联系人，调用 `contacts-upsert`
+        4. 查询或删除时优先提取 `name`，提取不到再用 `query`
+        5. 保存或更新时提取姓名、手机号、公司、邮箱、备注
+        6. 如果缺少保存联系人所需的 `name`，先简短追问
+        7. 删除时如果匹配到多个联系人，不要猜测，应提示用户说得更具体
+        8. 工具成功后，直接用中文给出简洁结果
 
         ## 调用格式
 
         <tool_call>
+        {"name": "contacts-search", "arguments": {"name": "张晓霞"}}
+        </tool_call>
+
+        <tool_call>
         {"name": "contacts-upsert", "arguments": {"name": "王总", "phone": "13812345678", "company": "字节"}}
+        </tool_call>
+
+        <tool_call>
+        {"name": "contacts-delete", "arguments": {"name": "王总"}}
         </tool_call>
         """),
     ]

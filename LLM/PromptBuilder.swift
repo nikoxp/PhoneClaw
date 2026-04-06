@@ -234,4 +234,52 @@ struct PromptBuilder {
 
         """
     }
+
+    /// 单 Skill + 多工具时，让模型只在允许的工具集合中选择一个工具并抽取 arguments。
+    static func buildSkillToolSelectionPrompt(
+        originalPrompt: String,
+        userQuestion: String,
+        skillInstructions: String,
+        allowedToolsSummary: String,
+        currentImageCount: Int = 0
+    ) -> String {
+        let systemBlock = extractSystemBlock(from: originalPrompt)
+        let systemInstructions = injectIntoSystemBlock(
+            systemBlock,
+            extraInstructions: """
+            对于当前这一个用户问题，你已经加载了所需的 Skill 指令。
+            不要再次调用 `load_skill`。
+
+            已加载的 Skill 指令：
+            \(skillInstructions)
+            """
+        )
+
+        return systemInstructions + """
+        <|turn>user
+        用户问题：
+        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+
+        你现在只负责两件事：
+        1. 在下面允许的工具里选择最合适的一个
+        2. 为该工具提取 arguments
+
+        允许的工具：
+        \(allowedToolsSummary)
+
+        严格遵守以下要求：
+        1. 不要调用工具，不要输出 `<tool_call>`。
+        2. 只输出一个 JSON object，格式必须是：
+           {"name":"工具名","arguments":{"参数名":"参数值"}}
+        3. `name` 必须是上面允许的工具之一。
+        4. `arguments` 里只保留当前工具需要的参数；没有的可选参数直接省略。
+        5. 不要输出 Markdown、代码块、解释、草稿或多余文字。
+        6. 时间字段必须转换成 ISO 8601，例如 `2026-04-07T20:00:00`。
+        7. 如果缺少执行所需的关键信息，输出：
+           {"_needs_clarification":"请补充缺少的信息"}
+        <turn|>
+        <|turn>model
+
+        """
+    }
 }

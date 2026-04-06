@@ -27,7 +27,7 @@ enum AppPermissionKind: String, CaseIterable, Identifiable {
         switch self {
         case .calendar: return "允许创建和写入日历事项"
         case .reminders: return "允许创建提醒和待办"
-        case .contacts: return "允许保存和更新联系人"
+        case .contacts: return "允许查询、保存和删除联系人"
         }
     }
 
@@ -383,10 +383,12 @@ class ToolRegistry {
             CNContactIdentifierKey as CNKeyDescriptor,
             CNContactGivenNameKey as CNKeyDescriptor,
             CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactMiddleNameKey as CNKeyDescriptor,
+            CNContactNicknameKey as CNKeyDescriptor,
+            CNContactJobTitleKey as CNKeyDescriptor,
             CNContactPhoneNumbersKey as CNKeyDescriptor,
             CNContactOrganizationNameKey as CNKeyDescriptor,
-            CNContactEmailAddressesKey as CNKeyDescriptor,
-            CNContactNoteKey as CNKeyDescriptor
+            CNContactEmailAddressesKey as CNKeyDescriptor
         ]
     }
 
@@ -401,6 +403,213 @@ class ToolRegistry {
             matching: predicate,
             keysToFetch: contactKeysToFetch()
         ).first
+    }
+
+    private func allContacts() throws -> [CNContact] {
+        var contacts: [CNContact] = []
+        let request = CNContactFetchRequest(keysToFetch: contactKeysToFetch())
+        request.sortOrder = .userDefault
+        try contactStore.enumerateContacts(with: request) { contact, _ in
+            contacts.append(contact)
+        }
+        return contacts
+    }
+
+    private func formattedContactName(_ contact: CNContact) -> String {
+        let manual = [contact.familyName, contact.middleName, contact.givenName]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined()
+        if !manual.isEmpty {
+            return manual
+        }
+
+        let nickname = contact.nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !nickname.isEmpty {
+            return nickname
+        }
+
+        let organization = contact.organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !organization.isEmpty {
+            return organization
+        }
+
+        return "未命名联系人"
+    }
+
+    private func clipboardTextPreview(
+        from text: String,
+        maxCharacters: Int = 500
+    ) -> (preview: String, truncated: Bool)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let endIndex = trimmed.index(
+            trimmed.startIndex,
+            offsetBy: maxCharacters,
+            limitedBy: trimmed.endIndex
+        ) ?? trimmed.endIndex
+
+        return (
+            preview: String(trimmed[..<endIndex]),
+            truncated: endIndex < trimmed.endIndex
+        )
+    }
+
+    private func contactSearchTexts(_ contact: CNContact) -> [String] {
+        [
+            formattedContactName(contact),
+            contact.familyName,
+            contact.middleName,
+            contact.givenName,
+            contact.nickname,
+            contact.organizationName,
+            contact.jobTitle
+        ]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    }
+
+    private func relaxedSearchAliases(for raw: String) -> [String] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var aliases = [trimmed]
+        let suffixes = ["总经理", "经理", "总监", "老板", "老师", "医生", "主任", "总", "哥", "姐"]
+        for suffix in suffixes where trimmed.hasSuffix(suffix) {
+            let candidate = String(trimmed.dropLast(suffix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidate.count >= 2 {
+                aliases.append(candidate)
+            }
+        }
+
+        let prefixes = ["老", "小", "阿"]
+        for prefix in prefixes where trimmed.hasPrefix(prefix) {
+            let candidate = String(trimmed.dropFirst(prefix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidate.count >= 2 {
+                aliases.append(candidate)
+            }
+        }
+
+        return Array(NSOrderedSet(array: aliases)) as? [String] ?? aliases
+    }
+
+    private func primaryPhone(_ contact: CNContact) -> String? {
+        contact.phoneNumbers
+            .map { $0.value.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+    }
+
+    private func primaryEmail(_ contact: CNContact) -> String? {
+        contact.emailAddresses
+            .map { String($0.value).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+    }
+
+    private func contactSummaryDictionary(_ contact: CNContact) -> [String: Any] {
+        [
+            "identifier": contact.identifier,
+            "name": formattedContactName(contact),
+            "phone": primaryPhone(contact) ?? "",
+            "company": contact.organizationName,
+            "email": primaryEmail(contact) ?? ""
+        ]
+    }
+
+    private func contactSummaryText(_ contact: CNContact) -> String {
+        var parts = [formattedContactName(contact)]
+        if let phone = primaryPhone(contact) {
+            parts.append("电话 \(phone)")
+        }
+        if let email = primaryEmail(contact) {
+            parts.append("邮箱 \(email)")
+        }
+        let company = contact.organizationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !company.isEmpty {
+            parts.append("公司 \(company)")
+        }
+        return parts.joined(separator: "，")
+    }
+
+    private func searchContacts(
+        identifier: String? = nil,
+        name: String? = nil,
+        phone: String? = nil,
+        email: String? = nil,
+        query: String? = nil
+    ) throws -> [CNContact] {
+        let identifier = identifier?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let phone = phone?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let email = email?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = query?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let candidates: [CNContact]
+        if let identifier, !identifier.isEmpty {
+            candidates = try contactStore.unifiedContacts(
+                matching: CNContact.predicateForContacts(withIdentifiers: [identifier]),
+                keysToFetch: contactKeysToFetch()
+            )
+        } else {
+            candidates = try allContacts()
+        }
+
+        let matches = candidates.filter { contact in
+            if let identifier, !identifier.isEmpty, contact.identifier != identifier {
+                return false
+            }
+
+            if let name, !name.isEmpty {
+                let aliases = relaxedSearchAliases(for: name)
+                let searchTexts = contactSearchTexts(contact)
+                let matched = aliases.contains { alias in
+                    searchTexts.contains { $0.localizedCaseInsensitiveContains(alias) }
+                }
+                if !matched {
+                    return false
+                }
+            }
+
+            if let phone, !phone.isEmpty,
+               !contact.phoneNumbers.contains(where: {
+                   $0.value.stringValue.localizedCaseInsensitiveContains(phone)
+               }) {
+                return false
+            }
+
+            if let email, !email.isEmpty,
+               !contact.emailAddresses.contains(where: {
+                   String($0.value).localizedCaseInsensitiveContains(email)
+               }) {
+                return false
+            }
+
+            if let query, !query.isEmpty {
+                let aliases = relaxedSearchAliases(for: query)
+                let textMatch = aliases.contains { alias in
+                    contactSearchTexts(contact).contains {
+                        $0.localizedCaseInsensitiveContains(alias)
+                    }
+                }
+                let phoneMatch = contact.phoneNumbers.contains {
+                    $0.value.stringValue.localizedCaseInsensitiveContains(query)
+                }
+                let emailMatch = contact.emailAddresses.contains {
+                    String($0.value).localizedCaseInsensitiveContains(query)
+                }
+                if !(textMatch || phoneMatch || emailMatch) {
+                    return false
+                }
+            }
+
+            return true
+        }
+
+        return matches.sorted {
+            formattedContactName($0).localizedCaseInsensitiveCompare(formattedContactName($1)) == .orderedAscending
+        }
     }
 
     // MARK: - 内置工具注册
@@ -463,21 +672,96 @@ class ToolRegistry {
             description: "读取剪贴板当前内容",
             parameters: "无"
         ) { _ in
-            let content = await MainActor.run { UIPasteboard.general.string }
-            if let raw = content, !raw.isEmpty {
-                let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return failurePayload(error: "剪贴板为空") }
-                let preview = String(text.prefix(500))
+            let snapshot = await MainActor.run { () -> [String: Any] in
+                let pasteboard = UIPasteboard.general
+
+                if pasteboard.numberOfItems == 0 {
+                    return ["kind": "empty"]
+                }
+
+                if pasteboard.hasImages {
+                    return [
+                        "kind": "image",
+                        "item_count": pasteboard.numberOfItems
+                    ]
+                }
+
+                if pasteboard.hasURLs,
+                   let urlText = pasteboard.url?.absoluteString,
+                   let preview = self.clipboardTextPreview(from: urlText, maxCharacters: 500) {
+                    return [
+                        "kind": "url",
+                        "content": preview.preview,
+                        "truncated": preview.truncated
+                    ]
+                }
+
+                if pasteboard.hasStrings,
+                   let raw = pasteboard.string,
+                   let preview = self.clipboardTextPreview(from: raw, maxCharacters: 500) {
+                    return [
+                        "kind": "text",
+                        "content": preview.preview,
+                        "truncated": preview.truncated
+                    ]
+                }
+
+                return [
+                    "kind": "unsupported",
+                    "item_count": pasteboard.numberOfItems
+                ]
+            }
+
+            switch snapshot["kind"] as? String {
+            case "text":
+                let preview = snapshot["content"] as? String ?? ""
+                let truncated = snapshot["truncated"] as? Bool ?? false
+                let suffix = truncated ? "（内容较长，已截断显示）" : ""
                 return successPayload(
-                    result: "剪贴板当前内容是：\(preview)",
+                    result: "剪贴板当前文本内容是：\(preview)\(suffix)",
                     extras: [
                         "type": "text",
                         "content": preview,
-                        "length": text.count
+                        "truncated": truncated
                     ]
                 )
+
+            case "url":
+                let preview = snapshot["content"] as? String ?? ""
+                let truncated = snapshot["truncated"] as? Bool ?? false
+                let suffix = truncated ? "（内容较长，已截断显示）" : ""
+                return successPayload(
+                    result: "剪贴板当前是链接：\(preview)\(suffix)",
+                    extras: [
+                        "type": "url",
+                        "content": preview,
+                        "truncated": truncated
+                    ]
+                )
+
+            case "image":
+                let itemCount = snapshot["item_count"] as? Int ?? 1
+                return successPayload(
+                    result: "剪贴板当前是图片内容。为避免额外内存占用，暂不直接解码图片。",
+                    extras: [
+                        "type": "image",
+                        "item_count": itemCount
+                    ]
+                )
+
+            case "unsupported":
+                let itemCount = snapshot["item_count"] as? Int ?? 1
+                return successPayload(
+                    result: "剪贴板当前包含 \(itemCount) 项非文本内容，暂不直接读取。",
+                    extras: [
+                        "type": "unsupported",
+                        "item_count": itemCount
+                    ]
+                )
+
+            default:
+                return failurePayload(error: "剪贴板为空")
             }
-            return failurePayload(error: "剪贴板为空")
         })
 
         register(RegisteredTool(
@@ -861,6 +1145,130 @@ class ToolRegistry {
                 )
             } catch {
                 return failurePayload(error: "保存联系人失败：\(error.localizedDescription)")
+            }
+        })
+
+        register(RegisteredTool(
+            name: "contacts-search",
+            description: "搜索联系人，可按姓名、手机号、邮箱、identifier 或关键词查询联系方式",
+            parameters: "query: 搜索关键词（可选）, identifier: 联系人标识（可选）, name: 姓名（可选）, phone: 手机号（可选）, email: 邮箱（可选）"
+        ) { args in
+            let identifier = (args["identifier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = (args["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let phone = (args["phone"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let email = (args["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let query = (args["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard identifier?.isEmpty == false
+                || name?.isEmpty == false
+                || phone?.isEmpty == false
+                || email?.isEmpty == false
+                || query?.isEmpty == false else {
+                return failurePayload(error: "请至少提供 query、name、phone、email 或 identifier 其中一个参数")
+            }
+
+            do {
+                guard try await self.requestContactsAccess() else {
+                    return failurePayload(error: "未获得通讯录权限")
+                }
+
+                let matches = Array(try self.searchContacts(
+                    identifier: identifier,
+                    name: name,
+                    phone: phone,
+                    email: email,
+                    query: query
+                ).prefix(5))
+
+                let items = matches.map(self.contactSummaryDictionary)
+                if matches.isEmpty {
+                    return successPayload(
+                        result: "未找到匹配的联系人。",
+                        extras: [
+                            "count": 0,
+                            "items": items
+                        ]
+                    )
+                }
+
+                let lines = matches.map(self.contactSummaryText)
+                return successPayload(
+                    result: "找到 \(matches.count) 个联系人：\(lines.joined(separator: "；"))。",
+                    extras: [
+                        "count": matches.count,
+                        "items": items
+                    ]
+                )
+            } catch {
+                return failurePayload(error: "搜索联系人失败：\(error.localizedDescription)")
+            }
+        })
+
+        register(RegisteredTool(
+            name: "contacts-delete",
+            description: "删除联系人，可按姓名、手机号、邮箱、identifier 或关键词匹配后删除",
+            parameters: "query: 搜索关键词（可选）, identifier: 联系人标识（可选）, name: 姓名（可选）, phone: 手机号（可选）, email: 邮箱（可选）"
+        ) { args in
+            let identifier = (args["identifier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawName = (args["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let phone = (args["phone"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let email = (args["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let query = (args["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = rawName?
+                .replacingOccurrences(of: "的电话", with: "")
+                .replacingOccurrences(of: "电话", with: "")
+                .replacingOccurrences(of: "手机号", with: "")
+                .replacingOccurrences(of: "号码", with: "")
+                .replacingOccurrences(of: "联系方式", with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "，。,？！!? "))
+
+            guard identifier?.isEmpty == false
+                || name?.isEmpty == false
+                || phone?.isEmpty == false
+                || email?.isEmpty == false
+                || query?.isEmpty == false else {
+                return failurePayload(error: "请至少提供 query、name、phone、email 或 identifier 其中一个参数")
+            }
+
+            do {
+                guard try await self.requestContactsAccess() else {
+                    return failurePayload(error: "未获得通讯录权限")
+                }
+
+                let matches = try self.searchContacts(
+                    identifier: identifier,
+                    name: name,
+                    phone: phone,
+                    email: email,
+                    query: query
+                )
+
+                if matches.isEmpty {
+                    return failurePayload(error: "未找到匹配的联系人")
+                }
+
+                if matches.count > 1 {
+                    let previews = matches.prefix(5).map(self.contactSummaryText).joined(separator: "；")
+                    return failurePayload(error: "匹配到多个联系人，请提供更具体的信息：\(previews)")
+                }
+
+                let contact = matches[0]
+                let mutableContact = contact.mutableCopy() as! CNMutableContact
+                let saveRequest = CNSaveRequest()
+                saveRequest.delete(mutableContact)
+                try self.contactStore.execute(saveRequest)
+
+                return successPayload(
+                    result: "已删除联系人“\(self.formattedContactName(contact))”。",
+                    extras: [
+                        "identifier": contact.identifier,
+                        "name": self.formattedContactName(contact),
+                        "phone": self.primaryPhone(contact) ?? "",
+                        "email": self.primaryEmail(contact) ?? ""
+                    ]
+                )
+            } catch {
+                return failurePayload(error: "删除联系人失败：\(error.localizedDescription)")
             }
         })
     }

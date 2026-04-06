@@ -174,7 +174,8 @@ class AgentEngine {
     // MARK: - Skill 查找（文件驱动）
 
     private func findSkillId(for name: String) -> String? {
-        if skillLoader.getDefinition(name) != nil { return name }
+        let resolvedName = skillLoader.canonicalSkillId(for: name)
+        if skillLoader.getDefinition(resolvedName) != nil { return resolvedName }
         return skillLoader.findSkillId(forTool: name)
     }
 
@@ -187,11 +188,42 @@ class AgentEngine {
     }
 
     private func handleLoadSkill(skillName: String) -> String? {
-        guard let entry = skillEntries.first(where: { $0.id == skillName }),
+        let resolvedSkillName = skillLoader.canonicalSkillId(for: skillName)
+        guard let entry = skillEntries.first(where: { $0.id == resolvedSkillName }),
               entry.isEnabled else {
             return nil
         }
-        return skillLoader.loadBody(skillId: skillName)
+        return skillLoader.loadBody(skillId: resolvedSkillName)
+    }
+
+    private func canonicalToolName(_ toolName: String, arguments: [String: Any]) -> String {
+        switch toolName {
+        case "contacts":
+            if arguments["action"] as? String == "delete"
+                || arguments["delete"] as? Bool == true {
+                return "contacts-delete"
+            }
+            if arguments["phone"] != nil
+                || arguments["company"] != nil
+                || arguments["notes"] != nil {
+                return "contacts-upsert"
+            }
+            if arguments["identifier"] != nil
+                || arguments["name"] != nil
+                || arguments["email"] != nil
+                || arguments["query"] != nil {
+                return "contacts-search"
+            }
+            return "contacts-search"
+        case "contacts_delete", "contacts-delete-contact":
+            return "contacts-delete"
+        case "contacts_upsert":
+            return "contacts-upsert"
+        case "contacts_search":
+            return "contacts-search"
+        default:
+            return toolName
+        }
     }
 
     private func handleToolExecution(toolName: String, args: [String: Any]) async throws -> String {
@@ -275,13 +307,58 @@ class AgentEngine {
             } else {
                 candidateNames = ["device-info"]
             }
+        case "contacts":
+            let searchKeywords = [
+                "查", "检查", "查询", "看看", "电话", "手机号", "号码",
+                "联系方式", "邮箱", "mail", "email"
+            ]
+            let deleteKeywords = [
+                "删除", "删掉", "删了", "删吗", "删", "移除", "去掉", "清除"
+            ]
+            let upsertKeywords = [
+                "存", "保存", "添加", "新建", "创建", "记一下", "记住", "更新", "修改"
+            ]
+
+            if deleteKeywords.contains(where: has) {
+                candidateNames = ["contacts-delete"]
+            } else if upsertKeywords.contains(where: has) {
+                candidateNames = ["contacts-upsert"]
+            } else if searchKeywords.contains(where: has) {
+                candidateNames = ["contacts-search"]
+            } else {
+                candidateNames = ["contacts-upsert", "contacts-search", "contacts-delete"]
+            }
+        case "clipboard":
+            let writeKeywords = [
+                "复制", "拷贝", "写入", "放到剪贴板", "存到剪贴板", "复制到剪贴板"
+            ]
+            let readKeywords = [
+                "剪贴板", "读一下", "读取", "看看", "看下", "查看", "内容"
+            ]
+
+            if writeKeywords.contains(where: has),
+               let arguments = heuristicArgumentsForTool(toolName: "clipboard-write", userQuestion: userQuestion),
+               validateSingleToolArguments(toolName: "clipboard-write", arguments: arguments) {
+                return ("clipboard-write", arguments)
+            }
+
+            if readKeywords.contains(where: has) {
+                candidateNames = ["clipboard-read"]
+            } else {
+                candidateNames = ["clipboard-read", "clipboard-write"]
+            }
         default:
             candidateNames = []
         }
 
         for name in candidateNames {
-            if let tool = tools.first(where: { $0.name == name }), tool.parameters == "无" {
+            guard let tool = tools.first(where: { $0.name == name }) else { continue }
+            if tool.parameters == "无" {
                 return (tool.name, [:])
+            }
+            if let arguments = heuristicArgumentsForTool(toolName: tool.name, userQuestion: userQuestion),
+               validateSingleToolArguments(toolName: tool.name, arguments: arguments) {
+                return (tool.name, arguments)
             }
         }
 
@@ -498,13 +575,60 @@ class AgentEngine {
         guard !text.isEmpty else { return nil }
 
         switch toolName {
+        case "clipboard-write":
+            let patterns = [
+                "(?:复制|拷贝|写入)(.+?)(?:到|进|到系统)?(?:剪贴板)",
+                "(?:把|将)(.+?)(?:复制|拷贝|写入)(?:到|进)?(?:剪贴板)"
+            ]
+
+            var extracted: String?
+            for pattern in patterns {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                let range = NSRange(text.startIndex..., in: text)
+                if let match = regex.firstMatch(in: text, range: range),
+                   let capture = Range(match.range(at: 1), in: text) {
+                    let value = String(text[capture])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "“”\"' "))
+                    if !value.isEmpty {
+                        extracted = value
+                        break
+                    }
+                }
+            }
+
+            if extracted == nil {
+                let cleaned = text
+                    .replacingOccurrences(of: "帮我", with: "")
+                    .replacingOccurrences(of: "把", with: "")
+                    .replacingOccurrences(of: "将", with: "")
+                    .replacingOccurrences(of: "复制到剪贴板", with: "")
+                    .replacingOccurrences(of: "拷贝到剪贴板", with: "")
+                    .replacingOccurrences(of: "写入剪贴板", with: "")
+                    .replacingOccurrences(of: "放到剪贴板", with: "")
+                    .replacingOccurrences(of: "存到剪贴板", with: "")
+                    .replacingOccurrences(of: "复制", with: "")
+                    .replacingOccurrences(of: "拷贝", with: "")
+                    .replacingOccurrences(of: "写入", with: "")
+                    .replacingOccurrences(of: "剪贴板", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "“”\"' "))
+                if !cleaned.isEmpty {
+                    extracted = cleaned
+                }
+            }
+
+            guard let extracted, !extracted.isEmpty else { return nil }
+            return ["text": extracted]
+
         case "contacts-upsert":
             let phone = text.firstMatch(of: /1[3-9]\d{9}/).map { String($0.0) }
             var name: String?
 
             let patterns = [
+                "(?:把|将)?(.+?)(?:的)?(?:电话|手机号|号码|联系方式)\\s*(?:1[3-9]\\d{9})\\s*(?:添加到|加到|存到|保存到)?(?:联系人|通讯录)",
                 "(?:帮我)?(?:存(?:一下)?|保存|记一下)(.+?)(?:的)?(?:电话|手机号|号码|联系方式)",
-                "(?:联系人|通讯录)里(?:添加|保存)?(.+?)(?:的)?(?:电话|手机号|号码|联系方式)"
+                "(?:联系人|通讯录)(?:里)?(?:添加|保存)?(.+?)(?:的)?(?:电话|手机号|号码|联系方式)"
             ]
             for pattern in patterns {
                 guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
@@ -521,13 +645,24 @@ class AgentEngine {
                let phoneRange = text.range(of: phone) {
                 let prefix = text[..<phoneRange.lowerBound]
                 let cleaned = prefix
+                    .replacingOccurrences(of: "把", with: "")
+                    .replacingOccurrences(of: "将", with: "")
                     .replacingOccurrences(of: "帮我", with: "")
                     .replacingOccurrences(of: "存一下", with: "")
                     .replacingOccurrences(of: "保存", with: "")
+                    .replacingOccurrences(of: "添加到联系人", with: "")
+                    .replacingOccurrences(of: "添加到通讯录", with: "")
+                    .replacingOccurrences(of: "加到联系人", with: "")
+                    .replacingOccurrences(of: "加到通讯录", with: "")
+                    .replacingOccurrences(of: "存到联系人", with: "")
+                    .replacingOccurrences(of: "存到通讯录", with: "")
                     .replacingOccurrences(of: "联系人", with: "")
                     .replacingOccurrences(of: "通讯录", with: "")
                     .replacingOccurrences(of: "的电话", with: "")
                     .replacingOccurrences(of: "电话", with: "")
+                    .replacingOccurrences(of: "手机号", with: "")
+                    .replacingOccurrences(of: "号码", with: "")
+                    .replacingOccurrences(of: "联系方式", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !cleaned.isEmpty {
                     name = cleaned
@@ -550,6 +685,153 @@ class AgentEngine {
             var result: [String: Any] = ["name": name]
             if let phone { result["phone"] = phone }
             if let company, !company.isEmpty { result["company"] = company }
+            return result
+
+        case "contacts-search":
+            let phone = text.firstMatch(of: /1[3-9]\d{9}/).map { String($0.0) }
+            let email: String? = {
+                guard let regex = try? NSRegularExpression(
+                    pattern: "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
+                    options: [.caseInsensitive]
+                ) else {
+                    return nil
+                }
+                let range = NSRange(text.startIndex..., in: text)
+                guard let match = regex.firstMatch(in: text, range: range),
+                      let capture = Range(match.range, in: text) else {
+                    return nil
+                }
+                return String(text[capture])
+            }()
+
+            var name: String?
+            let patterns = [
+                "(?:检查下?|查(?:一下|下)?|查询|看看)(?:联系人|通讯录)?(.+?)(?:的)?(?:电话|手机号|号码|联系方式|邮箱)",
+                "(?:联系人|通讯录)?(.+?)(?:的)?(?:电话|手机号|号码|联系方式|邮箱)(?:是)?(?:多少|是什么|有吗)?"
+            ]
+            for pattern in patterns {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                let range = NSRange(text.startIndex..., in: text)
+                if let match = regex.firstMatch(in: text, range: range),
+                   let capture = Range(match.range(at: 1), in: text) {
+                    let value = String(text[capture]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty {
+                        name = value
+                        break
+                    }
+                }
+            }
+
+            if name == nil {
+                let cleaned = text
+                    .replacingOccurrences(of: "帮我", with: "")
+                    .replacingOccurrences(of: "检查下", with: "")
+                    .replacingOccurrences(of: "检查", with: "")
+                    .replacingOccurrences(of: "查一下", with: "")
+                    .replacingOccurrences(of: "查下", with: "")
+                    .replacingOccurrences(of: "查询", with: "")
+                    .replacingOccurrences(of: "看看", with: "")
+                    .replacingOccurrences(of: "联系人", with: "")
+                    .replacingOccurrences(of: "通讯录", with: "")
+                    .replacingOccurrences(of: "的电话多少", with: "")
+                    .replacingOccurrences(of: "的电话", with: "")
+                    .replacingOccurrences(of: "电话多少", with: "")
+                    .replacingOccurrences(of: "电话", with: "")
+                    .replacingOccurrences(of: "手机号", with: "")
+                    .replacingOccurrences(of: "号码", with: "")
+                    .replacingOccurrences(of: "联系方式", with: "")
+                    .replacingOccurrences(of: "邮箱", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleaned.isEmpty {
+                    name = cleaned
+                }
+            }
+
+            var result: [String: Any] = [:]
+            if let name, !name.isEmpty { result["name"] = name }
+            if let phone { result["phone"] = phone }
+            if let email { result["email"] = email }
+            if result.isEmpty {
+                result["query"] = text
+            }
+            return result
+
+        case "contacts-delete":
+            let phone = text.firstMatch(of: /1[3-9]\d{9}/).map { String($0.0) }
+            let email: String? = {
+                guard let regex = try? NSRegularExpression(
+                    pattern: "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
+                    options: [.caseInsensitive]
+                ) else {
+                    return nil
+                }
+                let range = NSRange(text.startIndex..., in: text)
+                guard let match = regex.firstMatch(in: text, range: range),
+                      let capture = Range(match.range, in: text) else {
+                    return nil
+                }
+                return String(text[capture])
+            }()
+
+            var name: String?
+            let patterns = [
+                "(?:把|将)(.+?)(?:的)?(?:电话|手机号|号码|联系方式)?(?:从)?(?:联系人|通讯录)?(?:里|中)?(?:删除|删掉|删了|删吗|删|移除|去掉)",
+                "(?:删除|删掉|删了|删吗|删|移除|去掉)(?:联系人|通讯录)?(?:里|中)?(.+)"
+            ]
+            for pattern in patterns {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                let range = NSRange(text.startIndex..., in: text)
+                if let match = regex.firstMatch(in: text, range: range),
+                   let capture = Range(match.range(at: 1), in: text) {
+                    let value = String(text[capture]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty {
+                        name = value
+                        break
+                    }
+                }
+            }
+
+            if name == nil {
+                let cleaned = text
+                    .replacingOccurrences(of: "帮我", with: "")
+                    .replacingOccurrences(of: "把", with: "")
+                    .replacingOccurrences(of: "将", with: "")
+                    .replacingOccurrences(of: "从联系人中", with: "")
+                    .replacingOccurrences(of: "从联系人里", with: "")
+                    .replacingOccurrences(of: "从通讯录中", with: "")
+                    .replacingOccurrences(of: "从通讯录里", with: "")
+                    .replacingOccurrences(of: "联系人中", with: "")
+                    .replacingOccurrences(of: "联系人里", with: "")
+                    .replacingOccurrences(of: "通讯录中", with: "")
+                    .replacingOccurrences(of: "通讯录里", with: "")
+                    .replacingOccurrences(of: "联系人", with: "")
+                    .replacingOccurrences(of: "通讯录", with: "")
+                    .replacingOccurrences(of: "的电话", with: "")
+                    .replacingOccurrences(of: "电话", with: "")
+                    .replacingOccurrences(of: "手机号", with: "")
+                    .replacingOccurrences(of: "号码", with: "")
+                    .replacingOccurrences(of: "联系方式", with: "")
+                    .replacingOccurrences(of: "删除", with: "")
+                    .replacingOccurrences(of: "删掉", with: "")
+                    .replacingOccurrences(of: "删了吗", with: "")
+                    .replacingOccurrences(of: "删了", with: "")
+                    .replacingOccurrences(of: "删吗", with: "")
+                    .replacingOccurrences(of: "删", with: "")
+                    .replacingOccurrences(of: "移除", with: "")
+                    .replacingOccurrences(of: "去掉", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleaned.isEmpty {
+                    name = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "，。,？！!? "))
+                }
+            }
+
+            var result: [String: Any] = [:]
+            if let name, !name.isEmpty { result["name"] = name }
+            if let phone { result["phone"] = phone }
+            if let email { result["email"] = email }
+            if result.isEmpty {
+                result["query"] = text
+            }
             return result
 
         case "reminders-create":
@@ -624,29 +906,119 @@ class AgentEngine {
             return arguments["title"] is String
         case "contacts-upsert":
             return arguments["name"] is String
+        case "contacts-search", "contacts-delete":
+            return arguments["query"] is String
+                || arguments["identifier"] is String
+                || arguments["name"] is String
+                || arguments["phone"] is String
+                || arguments["email"] is String
+        case "clipboard-write":
+            return arguments["text"] is String
         default:
             return !arguments.isEmpty
         }
     }
 
-    private func extractSingleToolCallForLoadedSkill(
+    private func shouldSkipToolFollowUpModel(for toolName: String) -> Bool {
+        switch toolName {
+        case "clipboard-read", "clipboard-write":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func preflightSkillLoadCall(for userQuestion: String) -> String? {
+        let normalizedQuestion = userQuestion.lowercased()
+
+        func has(_ keyword: String) -> Bool {
+            normalizedQuestion.contains(keyword)
+        }
+
+        let mentionsClipboard = has("剪贴板") || has("clipboard")
+        guard mentionsClipboard else { return nil }
+
+        let readKeywords = ["读取", "读一下", "看看", "看下", "查看", "内容", "是什么"]
+        let writeKeywords = ["复制", "拷贝", "写入", "放到剪贴板", "存到剪贴板", "复制到剪贴板"]
+
+        if writeKeywords.contains(where: has),
+           let arguments = heuristicArgumentsForTool(toolName: "clipboard-write", userQuestion: userQuestion),
+           validateSingleToolArguments(toolName: "clipboard-write", arguments: arguments) {
+            return syntheticToolCallText(
+                name: "clipboard-write",
+                arguments: arguments
+            )
+        }
+
+        if readKeywords.contains(where: has) || mentionsClipboard {
+            return syntheticToolCallText(
+                name: "load_skill",
+                arguments: ["skill": "clipboard"]
+            )
+        }
+
+        return nil
+    }
+
+    private func extractToolCallForLoadedSkills(
         originalPrompt: String,
         userQuestion: String,
         skillInstructions: String,
         skillIds: [String],
         images: [CIImage]
     ) async -> SingleToolExtractionOutcome {
-        guard let tool = singleRegisteredToolForLoadedSkills(skillIds: skillIds),
-              tool.parameters != "无" else {
+        let uniqueSkillIds = Array(NSOrderedSet(array: skillIds)) as? [String] ?? skillIds
+        guard uniqueSkillIds.count == 1,
+              let skillId = uniqueSkillIds.first else {
             return .failed
         }
 
-        let extractionPrompt = PromptBuilder.buildSingleToolArgumentsPrompt(
+        let tools = registeredTools(for: skillId)
+            .filter { $0.parameters != "无" }
+        guard !tools.isEmpty else {
+            return .failed
+        }
+
+        if tools.count == 1, let tool = tools.first {
+            let extractionPrompt = PromptBuilder.buildSingleToolArgumentsPrompt(
+                originalPrompt: originalPrompt,
+                userQuestion: userQuestion,
+                skillInstructions: skillInstructions,
+                toolName: tool.name,
+                toolParameters: tool.parameters,
+                currentImageCount: images.count
+            )
+
+            if let raw = await streamLLM(prompt: extractionPrompt, images: images) {
+                let cleaned = cleanOutput(raw)
+                if let payload = parseJSONObject(cleaned) {
+                    if let clarification = payload["_needs_clarification"] as? String,
+                       !clarification.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
+                        return .needsClarification(clarification)
+                    }
+
+                    if validateSingleToolArguments(toolName: tool.name, arguments: payload) {
+                        return .toolCall(name: tool.name, arguments: payload)
+                    }
+                }
+            }
+
+            if let heuristic = heuristicArgumentsForTool(toolName: tool.name, userQuestion: userQuestion),
+               validateSingleToolArguments(toolName: tool.name, arguments: heuristic) {
+                return .toolCall(name: tool.name, arguments: heuristic)
+            }
+            return .failed
+        }
+
+        let allowedToolsSummary = tools.map {
+            "- \($0.name): \($0.description)\n  参数: \($0.parameters)"
+        }.joined(separator: "\n")
+
+        let extractionPrompt = PromptBuilder.buildSkillToolSelectionPrompt(
             originalPrompt: originalPrompt,
             userQuestion: userQuestion,
             skillInstructions: skillInstructions,
-            toolName: tool.name,
-            toolParameters: tool.parameters,
+            allowedToolsSummary: allowedToolsSummary,
             currentImageCount: images.count
         )
 
@@ -658,15 +1030,21 @@ class AgentEngine {
                     return .needsClarification(clarification)
                 }
 
-                if validateSingleToolArguments(toolName: tool.name, arguments: payload) {
-                    return .toolCall(name: tool.name, arguments: payload)
+                if let rawName = payload["name"] as? String,
+                   let arguments = payload["arguments"] as? [String: Any] {
+                    let toolName = canonicalToolName(rawName, arguments: arguments)
+                    if tools.contains(where: { $0.name == toolName }),
+                       validateSingleToolArguments(toolName: toolName, arguments: arguments) {
+                        return .toolCall(name: toolName, arguments: arguments)
+                    }
                 }
             }
         }
 
-        if let heuristic = heuristicArgumentsForTool(toolName: tool.name, userQuestion: userQuestion),
-           validateSingleToolArguments(toolName: tool.name, arguments: heuristic) {
-            return .toolCall(name: tool.name, arguments: heuristic)
+        if let heuristic = inferFallbackToolCall(skillIds: skillIds, userQuestion: userQuestion),
+           tools.contains(where: { $0.name == heuristic.name }),
+           validateSingleToolArguments(toolName: heuristic.name, arguments: heuristic.arguments) {
+            return .toolCall(name: heuristic.name, arguments: heuristic.arguments)
         }
 
         return .failed
@@ -965,6 +1343,16 @@ class AgentEngine {
                 return parts.joined(separator: "，") + "。"
             }
 
+        case "contacts-search":
+            if let result = string("result") {
+                return result
+            }
+
+        case "contacts-delete":
+            if let result = string("result") {
+                return result
+            }
+
         default:
             break
         }
@@ -983,6 +1371,7 @@ class AgentEngine {
 
     func setup() {
         applyModelSelection()
+        llm.refreshModelInstallStates()
         loadSystemPrompt()       // 从 SYSPROMPT.md 注入 system prompt
         applySamplingConfig()
         llm.loadModel()
@@ -1121,6 +1510,22 @@ class AgentEngine {
             systemPrompt: config.systemPrompt,
             historyDepth: historyDepth
         )
+
+        if let preflightToolCall = preflightSkillLoadCall(for: normalizedText) {
+            log("[Agent] preflight tool path triggered")
+            if messages.indices.contains(msgIndex),
+               messages[msgIndex].role == .assistant,
+               messages[msgIndex].content == "▍" {
+                messages.remove(at: msgIndex)
+            }
+            await executeToolChain(
+                prompt: prompt,
+                fullText: preflightToolCall,
+                userQuestion: normalizedText,
+                images: promptImages
+            )
+            return
+        }
 
         var detectedToolCall = false
         var buffer = ""
@@ -1262,7 +1667,7 @@ class AgentEngine {
             return
         }
 
-        guard let call = parseToolCall(fullText) else {
+        guard let parsedCall = parseToolCall(fullText) else {
             let cleaned = cleanOutput(fullText)
             if let lastAssistant = messages.lastIndex(where: { $0.role == .assistant }) {
                 messages[lastAssistant].update(content: cleaned.isEmpty ? "（无回复）" : cleaned)
@@ -1270,6 +1675,11 @@ class AgentEngine {
             isProcessing = false
             return
         }
+
+        let call = (
+            name: canonicalToolName(parsedCall.name, arguments: parsedCall.arguments),
+            arguments: parsedCall.arguments
+        )
 
         log("[Agent] Round \(round): tool_call name=\(call.name)")
 
@@ -1282,10 +1692,11 @@ class AgentEngine {
             var loadedDisplayNames: [String] = []
             var loadedSkillIds: [String] = []
             for lsCall in loadSkillCalls {
-                let skillName = (lsCall.arguments["skill"] as? String)
+                let requestedSkillName = (lsCall.arguments["skill"] as? String)
                              ?? (lsCall.arguments["name"] as? String)
                              ?? ""
-                log("[Agent] load_skill: \(skillName)")
+                let skillName = skillLoader.canonicalSkillId(for: requestedSkillName)
+                log("[Agent] load_skill: \(requestedSkillName)")
 
                 let displayName = findDisplayName(for: skillName)
                 loadedDisplayNames.append(displayName)
@@ -1327,7 +1738,7 @@ class AgentEngine {
                 return
             }
 
-            let singleToolExtraction = await extractSingleToolCallForLoadedSkill(
+            let singleToolExtraction = await extractToolCallForLoadedSkills(
                 originalPrompt: prompt,
                 userQuestion: userQuestion,
                 skillInstructions: allInstructions,
@@ -1471,6 +1882,12 @@ class AgentEngine {
             messages[cardIndex].update(role: .system, content: "done", skillName: displayName)
             messages.append(ChatMessage(role: .skillResult, content: toolResultSummary, skillName: call.name))
             log("[Agent] Tool \(call.name) round \(round) done")
+
+            if shouldSkipToolFollowUpModel(for: call.name) {
+                messages.append(ChatMessage(role: .assistant, content: toolResultSummary))
+                isProcessing = false
+                return
+            }
 
             let followUpPrompt = PromptBuilder.buildToolAnswerPrompt(
                 originalPrompt: prompt,

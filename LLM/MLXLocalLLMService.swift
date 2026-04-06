@@ -14,6 +14,17 @@ public struct BundledModelOption: Identifiable, Hashable, Sendable {
     public let id: String
     public let directoryName: String
     public let displayName: String
+    public let repositoryID: String
+    public let requiredFiles: [String]
+}
+
+public enum ModelInstallState: Equatable, Sendable {
+    case notInstalled
+    case checkingSource
+    case downloading(completedFiles: Int, totalFiles: Int, currentFile: String)
+    case downloaded
+    case bundled
+    case failed(String)
 }
 
 /// MLX GPU inference service for Gemma 4.
@@ -24,12 +35,34 @@ public class MLXLocalLLMService: LLMEngine {
         .init(
             id: "gemma-4-e2b-it-4bit",
             directoryName: "gemma-4-e2b-it-4bit",
-            displayName: "Gemma 4 E2B"
+            displayName: "Gemma 4 E2B",
+            repositoryID: "mlx-community/gemma-4-e2b-it-4bit",
+            requiredFiles: [
+                "config.json",
+                "generation_config.json",
+                "model.safetensors",
+                "model.safetensors.index.json",
+                "processor_config.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "chat_template.jinja"
+            ]
         ),
         .init(
             id: "gemma-4-e4b-it-4bit",
             directoryName: "gemma-4-e4b-it-4bit",
-            displayName: "Gemma 4 E4B"
+            displayName: "Gemma 4 E4B",
+            repositoryID: "mlx-community/gemma-4-e4b-it-4bit",
+            requiredFiles: [
+                "config.json",
+                "generation_config.json",
+                "model.safetensors",
+                "model.safetensors.index.json",
+                "processor_config.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "chat_template.jinja"
+            ]
         )
     ]
     static let defaultModel = availableModels[0]
@@ -47,6 +80,7 @@ public class MLXLocalLLMService: LLMEngine {
     public var modelDisplayName: String { loadedModel?.displayName ?? selectedModel.displayName }
     public var selectedModelID: String { selectedModel.id }
     public var loadedModelID: String? { loadedModel?.id }
+    public private(set) var modelInstallStates: [String: ModelInstallState] = [:]
 
     // MARK: - Compatibility Settings
 
@@ -60,6 +94,10 @@ public class MLXLocalLLMService: LLMEngine {
     private var cancelled = false
     private var currentLoadTask: Task<Void, Never>?
     private var currentGenerationTask: Task<Void, Never>?
+    private var currentDownloadTasks: [String: Task<Void, Never>] = [:]
+    private let foregroundStateLock = NSLock()
+    private var foregroundGPUAllowed = true
+    private var lifecycleObserverTokens: [NSObjectProtocol] = []
 
     /// Local path to the model directory
     private var modelPath: URL {
@@ -74,6 +112,15 @@ public class MLXLocalLLMService: LLMEngine {
             self.selectedModel = option
         }
         self.stats.backend = "mlx-gpu"
+        configureLifecycleObservers()
+        cleanupStalePartialDirectories()
+        refreshModelInstallStates()
+    }
+
+    deinit {
+        for token in lifecycleObserverTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     /// Convenience init with default model location
@@ -95,28 +142,195 @@ public class MLXLocalLLMService: LLMEngine {
     }
 
     private static func resolveModelPath(for model: BundledModelOption) -> URL {
-        if let resourceURL = Bundle.main.resourceURL {
-            let directBundleDir = resourceURL.appendingPathComponent(
-                model.directoryName,
-                isDirectory: true
-            )
-            if FileManager.default.fileExists(atPath: directBundleDir.path) {
-                return directBundleDir
-            }
-
-            let nestedBundleDir = resourceURL
-                .appendingPathComponent("Models", isDirectory: true)
-                .appendingPathComponent(model.directoryName, isDirectory: true)
-            if FileManager.default.fileExists(atPath: nestedBundleDir.path) {
-                return nestedBundleDir
-            }
+        if let bundledPath = bundledModelPath(for: model) {
+            return bundledPath
         }
 
+        return downloadedModelPath(for: model)
+    }
+
+    private static func documentsModelsRoot() -> URL {
         let documentsPath = FileManager.default.urls(
             for: .documentDirectory,
             in: .userDomainMask
         ).first!
-        return documentsPath.appendingPathComponent("models/\(model.directoryName)")
+        return documentsPath.appendingPathComponent("models", isDirectory: true)
+    }
+
+    private static func downloadedModelPath(for model: BundledModelOption) -> URL {
+        documentsModelsRoot().appendingPathComponent(model.directoryName, isDirectory: true)
+    }
+
+    private static func partialModelPath(for model: BundledModelOption) -> URL {
+        documentsModelsRoot().appendingPathComponent("\(model.directoryName).partial", isDirectory: true)
+    }
+
+    private static func bundledModelPath(for model: BundledModelOption) -> URL? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+
+        let directBundleDir = resourceURL.appendingPathComponent(
+            model.directoryName,
+            isDirectory: true
+        )
+        if hasRequiredFiles(for: model, at: directBundleDir) {
+            return directBundleDir
+        }
+
+        let nestedBundleDir = resourceURL
+            .appendingPathComponent("Models", isDirectory: true)
+            .appendingPathComponent(model.directoryName, isDirectory: true)
+        if hasRequiredFiles(for: model, at: nestedBundleDir) {
+            return nestedBundleDir
+        }
+
+        return nil
+    }
+
+    private static func hasRequiredFiles(for model: BundledModelOption, at directory: URL) -> Bool {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: directory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return false
+        }
+        return model.requiredFiles.allSatisfy { file in
+            fm.fileExists(atPath: directory.appendingPathComponent(file).path)
+        }
+    }
+
+    public func isModelAvailable(_ model: BundledModelOption) -> Bool {
+        Self.bundledModelPath(for: model) != nil
+            || Self.hasRequiredFiles(for: model, at: Self.downloadedModelPath(for: model))
+    }
+
+    public func installState(for model: BundledModelOption) -> ModelInstallState {
+        if Self.bundledModelPath(for: model) != nil {
+            return .bundled
+        }
+        if Self.hasRequiredFiles(for: model, at: Self.downloadedModelPath(for: model)) {
+            return .downloaded
+        }
+        return modelInstallStates[model.id] ?? .notInstalled
+    }
+
+    public func refreshModelInstallStates() {
+        cleanupStalePartialDirectories()
+        for model in Self.availableModels {
+            if Self.bundledModelPath(for: model) != nil {
+                modelInstallStates[model.id] = .bundled
+            } else if Self.hasRequiredFiles(for: model, at: Self.downloadedModelPath(for: model)) {
+                modelInstallStates[model.id] = .downloaded
+            } else if case .checkingSource = modelInstallStates[model.id] {
+                continue
+            } else if case .downloading = modelInstallStates[model.id] {
+                continue
+            } else {
+                modelInstallStates[model.id] = .notInstalled
+            }
+        }
+    }
+
+    private func cleanupStalePartialDirectories() {
+        let fm = FileManager.default
+        for model in Self.availableModels {
+            let partialDirectory = Self.partialModelPath(for: model)
+            if fm.fileExists(atPath: partialDirectory.path) {
+                try? fm.removeItem(at: partialDirectory)
+            }
+        }
+    }
+
+    private func huggingFaceURL(for model: BundledModelOption, file: String) -> URL? {
+        let rawPath = "\(model.repositoryID)/resolve/main/\(file)"
+        return URL(string: "https://huggingface.co/" + rawPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!.replacingOccurrences(of: "%2F", with: "/"))
+    }
+
+    public func downloadModel(id: String) async {
+        guard let model = Self.availableModels.first(where: { $0.id == id }) else { return }
+        if isModelAvailable(model) {
+            refreshModelInstallStates()
+            return
+        }
+        if currentDownloadTasks[id] != nil {
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let fm = FileManager.default
+            let modelsRoot = Self.documentsModelsRoot()
+            let finalDirectory = Self.downloadedModelPath(for: model)
+            let partialDirectory = Self.partialModelPath(for: model)
+
+            await MainActor.run {
+                self.modelInstallStates[id] = .checkingSource
+            }
+
+            do {
+                if !fm.fileExists(atPath: modelsRoot.path) {
+                    try fm.createDirectory(at: modelsRoot, withIntermediateDirectories: true)
+                }
+                if fm.fileExists(atPath: partialDirectory.path) {
+                    try fm.removeItem(at: partialDirectory)
+                }
+                try fm.createDirectory(at: partialDirectory, withIntermediateDirectories: true)
+
+                let totalFiles = model.requiredFiles.count
+                for (index, file) in model.requiredFiles.enumerated() {
+                    guard let url = huggingFaceURL(for: model, file: file) else {
+                        throw DownloadError.invalidURL(file)
+                    }
+
+                    await MainActor.run {
+                        self.modelInstallStates[id] = .downloading(
+                            completedFiles: index,
+                            totalFiles: totalFiles,
+                            currentFile: file
+                        )
+                    }
+
+                    let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1800)
+                    let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw DownloadError.invalidResponse
+                    }
+                    guard (200...299).contains(http.statusCode) else {
+                        throw DownloadError.httpStatus(http.statusCode)
+                    }
+
+                    let destinationURL = partialDirectory.appendingPathComponent(file)
+                    let parentDirectory = destinationURL.deletingLastPathComponent()
+                    if !fm.fileExists(atPath: parentDirectory.path) {
+                        try fm.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
+                    }
+                    if fm.fileExists(atPath: destinationURL.path) {
+                        try fm.removeItem(at: destinationURL)
+                    }
+                    try fm.moveItem(at: temporaryURL, to: destinationURL)
+                }
+
+                if fm.fileExists(atPath: finalDirectory.path) {
+                    try fm.removeItem(at: finalDirectory)
+                }
+                try fm.moveItem(at: partialDirectory, to: finalDirectory)
+
+                await MainActor.run {
+                    self.modelInstallStates[id] = .downloaded
+                    self.refreshModelInstallStates()
+                }
+            } catch {
+                try? fm.removeItem(at: partialDirectory)
+                await MainActor.run {
+                    self.modelInstallStates[id] = .failed(error.localizedDescription)
+                }
+            }
+
+            await MainActor.run {
+                self.currentDownloadTasks[id] = nil
+            }
+        }
+
+        currentDownloadTasks[id] = task
+        await task.value
     }
 
     func loadModel() {
@@ -137,7 +351,15 @@ public class MLXLocalLLMService: LLMEngine {
                     }
                 }
             } catch {
-                statusMessage = "❌ \(error.localizedDescription)"
+                if let mlxError = error as? MLXError,
+                   case .modelDirectoryMissing = mlxError {
+                    statusMessage = "请在配置中下载 \(self.selectedModel.displayName) 模型"
+                } else {
+                    statusMessage = "❌ \(error.localizedDescription)"
+                }
+                self.isLoaded = false
+                self.loadedModel = nil
+                self.refreshModelInstallStates()
                 print("[MLX] Load failed: \(error)")
             }
         }
@@ -213,7 +435,7 @@ public class MLXLocalLLMService: LLMEngine {
         statusMessage = "正在初始化模型..."
         await Gemma4Registration.register()
 
-        guard FileManager.default.fileExists(atPath: path.path) else {
+        guard Self.hasRequiredFiles(for: model, at: path) else {
             throw MLXError.modelDirectoryMissing(path.path)
         }
 
@@ -328,10 +550,75 @@ public class MLXLocalLLMService: LLMEngine {
         let isActive = await MainActor.run {
             UIApplication.shared.applicationState == .active
         }
+        setForegroundGPUAllowed(isActive)
         guard isActive else {
             throw MLXError.gpuExecutionRequiresForeground
         }
         #endif
+    }
+
+    private func configureLifecycleObservers() {
+        #if canImport(UIKit)
+        let center = NotificationCenter.default
+        lifecycleObserverTokens = [
+            center.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.handleApplicationLeavingForeground()
+            },
+            center.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.handleApplicationLeavingForeground()
+            },
+            center.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.setForegroundGPUAllowed(true)
+            },
+            center.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.setForegroundGPUAllowed(true)
+            }
+        ]
+
+        Task { [weak self] in
+            guard let self else { return }
+            let isActive = await MainActor.run {
+                UIApplication.shared.applicationState == .active
+            }
+            self.setForegroundGPUAllowed(isActive)
+        }
+        #endif
+    }
+
+    private func handleApplicationLeavingForeground() {
+        setForegroundGPUAllowed(false)
+        cancelled = true
+        currentGenerationTask?.cancel()
+        currentLoadTask?.cancel()
+    }
+
+    private func setForegroundGPUAllowed(_ allowed: Bool) {
+        foregroundStateLock.lock()
+        foregroundGPUAllowed = allowed
+        foregroundStateLock.unlock()
+    }
+
+    private func isForegroundGPUAllowed() -> Bool {
+        foregroundStateLock.lock()
+        let allowed = foregroundGPUAllowed
+        foregroundStateLock.unlock()
+        return allowed
     }
 
     private func generateStream(
@@ -390,7 +677,7 @@ public class MLXLocalLLMService: LLMEngine {
                             ),
                             context: context
                         ) { tokens in
-                            if self.cancelled {
+                            if self.cancelled || !self.isForegroundGPUAllowed() {
                                 return .stop
                             }
 
@@ -498,6 +785,32 @@ enum MLXError: LocalizedError {
             return "MLX 模型目录不存在: \(path)"
         case .gpuExecutionRequiresForeground:
             return "应用进入后台时，iPhone 不允许继续提交 GPU 推理任务。"
+        }
+    }
+}
+
+enum DownloadError: LocalizedError {
+    case invalidURL(String)
+    case invalidResponse
+    case httpStatus(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL(let file):
+            return "无法构造下载链接：\(file)"
+        case .invalidResponse:
+            return "下载源响应无效"
+        case .httpStatus(let statusCode):
+            switch statusCode {
+            case 401, 403:
+                return "下载源拒绝访问（\(statusCode)）"
+            case 404:
+                return "模型文件不存在（404）"
+            case 429:
+                return "下载过于频繁，请稍后重试（429）"
+            default:
+                return "下载失败，HTTP \(statusCode)"
+            }
         }
     }
 }

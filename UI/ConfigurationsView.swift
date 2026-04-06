@@ -56,8 +56,9 @@ struct ConfigurationsView: View {
                     Button(localized("取消", "Cancel")) { dismiss() }
                         .foregroundStyle(Theme.textSecondary)
                     Button(localized("确定", "OK")) {
-                        applySettings()
-                        dismiss()
+                        if applySettings() {
+                            dismiss()
+                        }
                     }
                     .font(.body.weight(.semibold))
                     .foregroundStyle(Theme.accent)
@@ -76,6 +77,7 @@ struct ConfigurationsView: View {
         .onAppear { loadCurrentSettings() }
         #if canImport(UIKit)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            engine.llm.refreshModelInstallStates()
             refreshPermissionStatuses()
         }
         #endif
@@ -184,9 +186,8 @@ struct ConfigurationsView: View {
 
             VStack(spacing: 10) {
                 ForEach(engine.availableModels) { model in
-                    Button {
-                        selectedModelID = model.id
-                    } label: {
+                    let state = engine.llm.installState(for: model)
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(model.displayName)
@@ -199,34 +200,45 @@ struct ConfigurationsView: View {
 
                             Spacer()
 
-                            if selectedModelID == model.id {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(Theme.accent)
-                            } else {
-                                Image(systemName: "circle")
-                                    .foregroundStyle(Theme.textTertiary)
+                            VStack(alignment: .trailing, spacing: 8) {
+                                modelStateControl(for: model, state: state)
+
+                                if selectedModelID == model.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(Theme.accent)
+                                } else {
+                                    Image(systemName: "circle")
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
                             }
                         }
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(selectedModelID == model.id ? Theme.accentSubtle : Theme.bg)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(
-                                    selectedModelID == model.id ? Theme.accent : Theme.border,
-                                    lineWidth: 1
-                                )
-                        )
+
+                        if let detail = modelStateDetail(state) {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(state.isFailure ? Theme.accent : Theme.textTertiary)
+                        }
                     }
-                    .buttonStyle(.plain)
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(selectedModelID == model.id ? Theme.accentSubtle : Theme.bg)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(
+                                selectedModelID == model.id ? Theme.accent : Theme.border,
+                                lineWidth: 1
+                            )
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 12))
+                    .onTapGesture {
+                        selectedModelID = model.id
+                    }
                 }
             }
 
-            Text(selectedModelID == engine.llm.selectedModelID
-                 ? localized("点击确定会保留当前模型。", "Tap OK to keep the current model.")
-                 : localized("点击确定后会卸载当前模型并重新加载新模型。", "Tap OK to unload the current model and reload the new one."))
+            Text(modelFooterText)
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
         }
@@ -349,6 +361,94 @@ struct ConfigurationsView: View {
         }
     }
 
+    @ViewBuilder
+    private func modelStateControl(for model: BundledModelOption, state: ModelInstallState) -> some View {
+        switch state {
+        case .notInstalled:
+            Button(localized("下载", "Download")) {
+                selectedModelID = model.id
+                Task {
+                    await engine.llm.downloadModel(id: model.id)
+                    if engine.llm.isModelAvailable(model),
+                       selectedModelID == model.id,
+                       (!engine.llm.isLoaded || engine.llm.loadedModelID != model.id) {
+                        engine.config.selectedModelID = model.id
+                        engine.reloadModel()
+                    }
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Theme.accent.opacity(0.15), in: Capsule())
+        case .checkingSource:
+            modelBadge(localized("检查中", "Checking"))
+        case .downloading(let completedFiles, let totalFiles, _):
+            modelBadge(localized("下载中 \(completedFiles)/\(totalFiles)", "Downloading \(completedFiles)/\(totalFiles)"))
+        case .downloaded:
+            modelBadge(localized("已下载", "Downloaded"), color: Theme.accentGreen)
+        case .bundled:
+            modelBadge(localized("内置", "Bundled"), color: Theme.accentGreen)
+        case .failed:
+            Button(localized("重试", "Retry")) {
+                selectedModelID = model.id
+                Task {
+                    await engine.llm.downloadModel(id: model.id)
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Theme.accent.opacity(0.15), in: Capsule())
+        }
+    }
+
+    private func modelBadge(_ text: String, color: Color = Theme.textTertiary) -> some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.14), in: Capsule())
+    }
+
+    private func modelStateDetail(_ state: ModelInstallState) -> String? {
+        switch state {
+        case .notInstalled:
+            return localized("未安装", "Not Installed")
+        case .checkingSource:
+            return localized("正在检查模型下载源。", "Checking the model download source.")
+        case .downloading(_, _, let currentFile):
+            return localized("正在下载：", "Downloading: ") + currentFile
+        case .downloaded:
+            return localized("已下载到手机本地，可直接加载。", "Downloaded on device and ready to load.")
+        case .bundled:
+            return localized("模型已随 App 内置。", "This model is bundled inside the app.")
+        case .failed(let message):
+            return message
+        }
+    }
+
+    private var modelFooterText: String {
+        guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }) else {
+            return localized("点右侧按钮下载模型后再点击确定。", "Download a model first, then tap OK.")
+        }
+
+        if !engine.llm.isModelAvailable(selectedModel) {
+            return localized("先下载选中的模型，再点击确定加载。", "Download the selected model first, then tap OK to load it.")
+        }
+
+        if selectedModelID == engine.llm.selectedModelID,
+           engine.llm.loadedModelID == selectedModelID,
+           engine.llm.isLoaded {
+            return localized("点击确定会保留当前模型。", "Tap OK to keep the current model.")
+        }
+
+        return localized("点击确定后会卸载当前模型并重新加载新模型。", "Tap OK to unload the current model and reload the new one.")
+    }
+
     // MARK: - 加载 / 应用
 
     private func localized(_ zh: String, _ en: String) -> String {
@@ -404,7 +504,8 @@ struct ConfigurationsView: View {
     }
 
     private func loadCurrentSettings() {
-        selectedModelID = engine.config.selectedModelID
+        engine.llm.refreshModelInstallStates()
+        selectedModelID = engine.llm.loadedModelID ?? engine.config.selectedModelID
         maxTokens = Double(engine.config.maxTokens)
         topK = Double(engine.config.topK)
         topP = engine.config.topP
@@ -413,10 +514,9 @@ struct ConfigurationsView: View {
         refreshPermissionStatuses()
     }
 
-    private func applySettings() {
+    private func applySettings() -> Bool {
         let modelChanged = engine.config.selectedModelID != selectedModelID
 
-        engine.config.selectedModelID = selectedModelID
         engine.config.maxTokens = Int(maxTokens)
         engine.config.topK = Int(topK)
         engine.config.topP = topP
@@ -425,9 +525,23 @@ struct ConfigurationsView: View {
 
         // 同步采样参数到 LLM（下次生成立即生效）
         engine.applySamplingConfig()
-        if modelChanged {
+
+        guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }),
+              engine.llm.isModelAvailable(selectedModel) else {
+            if let missingModel = engine.availableModels.first(where: { $0.id == selectedModelID }) {
+                engine.llm.statusMessage = localized("请先在配置中下载 ", "Please download ")
+                    + missingModel.displayName
+                    + localized(" 模型", " first")
+            }
+            return false
+        }
+
+        engine.config.selectedModelID = selectedModelID
+        let needsLoad = !engine.llm.isLoaded || engine.llm.loadedModelID != selectedModelID
+        if modelChanged || needsLoad {
             engine.reloadModel()
         }
+        return true
     }
 
     private func refreshPermissionStatuses() {
@@ -450,5 +564,14 @@ struct ConfigurationsView: View {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         openURL(url)
         #endif
+    }
+}
+
+private extension ModelInstallState {
+    var isFailure: Bool {
+        if case .failed = self {
+            return true
+        }
+        return false
     }
 }
