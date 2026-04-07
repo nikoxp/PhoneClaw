@@ -88,20 +88,28 @@ Model recommendation:
 
 ## Quick Start
 
-### 1. Clone the repository
+If you are installing from source, you will need macOS + Xcode 16, iOS 17+, CocoaPods, a real device, and an Apple ID.
+
+### 1. Direct install (no Mac required)
+
+- Download the latest shell `IPA` from [GitHub Releases](https://github.com/kellyvv/PhoneClaw/releases)
+- Sign and install it with your own signing method
+- After the first launch, open `Model Settings` and download E2B or E4B on the phone
+
+### 2. Clone the repository
 
 ```bash
 git clone https://github.com/kellyvv/phoneclaw.git
 cd phoneclaw
 ```
 
-### 2. Install dependencies
+### 3. Install dependencies
 
 ```bash
 pod install
 ```
 
-### 3. Optional: pre-download a model locally
+### 4. Optional: pre-download a model locally
 
 The default recommended flow is now:
 
@@ -157,7 +165,7 @@ Models/
 > Approximate repository sizes on Hugging Face: E2B ~3.58 GB, E4B ~5.22 GB.
 > You can also download manually from the model page and place files in the correct directory.
 
-### 4. Open the workspace
+### 5. Open the workspace
 
 ```bash
 open PhoneClaw.xcworkspace
@@ -165,7 +173,7 @@ open PhoneClaw.xcworkspace
 
 > Do not open `.xcodeproj`. Always open `.xcworkspace`.
 
-### 5. Configure signing and run
+### 6. Configure signing and run
 
 1. In Xcode, select the PhoneClaw target
 2. Open Signing & Capabilities
