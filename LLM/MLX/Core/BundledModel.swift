@@ -92,17 +92,13 @@ public struct ModelRuntimeProfile: Sendable {
     /// safeHistoryDepth: 整数离散映射, 保留 tier 表
     public let historyDepthTiers: [BudgetTier]
 
-    /// 多模态失败时建议切换到的更轻量模型 ID
-    public let lighterAlternativeID: String?
-
     public init(
         thinkingMarker: String?,
         textOutputBudget: LinearBudgetFormula,
         thinkingOutputBudget: LinearBudgetFormula,
         multimodalOutputTiers: [MultimodalTier],
         multimodalCriticalHeadroomMB: Int,
-        historyDepthTiers: [BudgetTier],
-        lighterAlternativeID: String?
+        historyDepthTiers: [BudgetTier]
     ) {
         self.thinkingMarker = thinkingMarker
         self.textOutputBudget = textOutputBudget
@@ -110,7 +106,6 @@ public struct ModelRuntimeProfile: Sendable {
         self.multimodalOutputTiers = multimodalOutputTiers
         self.multimodalCriticalHeadroomMB = multimodalCriticalHeadroomMB
         self.historyDepthTiers = historyDepthTiers
-        self.lighterAlternativeID = lighterAlternativeID
     }
 }
 
@@ -153,9 +148,7 @@ public enum MLXModelProfiles {
             BudgetTier(headroomMaxMB: 900,    tokens: 2),
             BudgetTier(headroomMaxMB: 1_500,  tokens: 4),
             BudgetTier(headroomMaxMB: .max,   tokens: 6),
-        ],
-
-        lighterAlternativeID: nil
+        ]
     )
 
     // MARK: Gemma 4 E4B — 重量, 42 layers (KV cache 大, 更紧)
@@ -191,9 +184,7 @@ public enum MLXModelProfiles {
             BudgetTier(headroomMaxMB: 1_100,  tokens: 2),
             BudgetTier(headroomMaxMB: 1_700,  tokens: 4),
             BudgetTier(headroomMaxMB: .max,   tokens: 6),
-        ],
-
-        lighterAlternativeID: "gemma-4-e2b-it-4bit"
+        ]
     )
 
     // MARK: - Lookup

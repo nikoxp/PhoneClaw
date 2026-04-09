@@ -394,15 +394,9 @@ public class MLXLocalLLMService: LLMEngine {
 
 
     private func currentMultimodalFallbackRecommendation() -> String {
-        let currentModel = loadedModel ?? selectedModel
-        if let lighterID = currentModel.runtimeProfile.lighterAlternativeID,
-           let lighter = Self.availableModels.first(where: { $0.id == lighterID }) {
-            if isModelAvailable(lighter) {
-                return "如仍失败，可手动切换到 \(lighter.displayName) 处理图片或音频。"
-            }
-            return "如仍失败，可先下载并手动切换到 \(lighter.displayName)。"
-        }
-        return "如仍失败，请改用更轻量的模型处理图片或音频。"
+        // 默认用户只装一个模型, 不建议"切换到另一个模型" (他可能根本没有)。
+        // 给可执行的自救步骤: 关后台、减附件数量/尺寸。
+        return "可尝试: 关闭后台应用释放内存; 减少附件数量; 或把图片缩小再试。"
     }
 
 
