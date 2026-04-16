@@ -84,6 +84,11 @@ struct OrbSceneView: UIViewRepresentable {
             isReady = true
         }
 
+        // Active = engine 已经走到可交互态 (listening/recording/processing/speaking).
+        // 当 state == .idle 说明要么未初始化完, 要么会话结束 — Orb 保持暗灰, 提示
+        // 用户"还在准备, 别急着说话".
+        private var lastActivePushed: Bool? = nil
+
         @objc private func tick() {
             guard isReady, let webView else { return }
 
@@ -99,6 +104,13 @@ struct OrbSceneView: UIViewRepresentable {
                 output.b0, output.b1, output.b2
             )
             webView.evaluateJavaScript(script, completionHandler: nil)
+
+            // Active 状态只在变化时 push, 减少 JS bridge 调用
+            let active = state != .idle
+            if lastActivePushed != active {
+                lastActivePushed = active
+                webView.evaluateJavaScript("window.__orbSetActive(\(active));", completionHandler: nil)
+            }
         }
 
         deinit {
@@ -352,13 +364,37 @@ void main() {
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     pmremGenerator.compileEquirectangularShader();
 
+    // Two-state material: dim gray while "preparing" (pre-TTS), warm amber-gold
+    // once engine has transitioned to any active state (.listening onwards).
+    // Lerped smoothly via __orbSetActive callback.
+    const activeColor      = new THREE.Color(0x2a1a08);  // 暖琥珀
+    const activeEmissive   = new THREE.Color(0x1a0f04);
+    const inactiveColor    = new THREE.Color(0x1a1a20);  // 冷灰
+    const inactiveEmissive = new THREE.Color(0x0a0a0c);
+    let activeTargetIntensity = 0.25;   // envMapIntensity target, start dim
+    let activeTargetEmissive  = 0.35;   // emissiveIntensity target, start dim
+
     const sphereMaterial = new THREE.MeshStandardMaterial({
-      color: 0x2a1a08,
+      color: inactiveColor.clone(),
       metalness: 0.85,
       roughness: 0.25,
-      emissive: 0x1a0f04,
-      emissiveIntensity: 1.2
+      emissive: inactiveEmissive.clone(),
+      emissiveIntensity: activeTargetEmissive,
+      envMapIntensity: activeTargetIntensity
     });
+
+    window.__orbSetActive = (active) => {
+      activeTargetIntensity = active ? 1.0 : 0.25;
+      activeTargetEmissive  = active ? 1.2 : 0.35;
+      if (window.__orbTargetColor) {
+        window.__orbTargetColor.copy(active ? activeColor : inactiveColor);
+      }
+      if (window.__orbTargetEmissive) {
+        window.__orbTargetEmissive.copy(active ? activeEmissive : inactiveEmissive);
+      }
+    };
+    window.__orbTargetColor = inactiveColor.clone();
+    window.__orbTargetEmissive = inactiveEmissive.clone();
 
     sphereMaterial.onBeforeCompile = (shader) => {
       shader.uniforms.time = { value: 0 };
@@ -442,6 +478,14 @@ void main() {
       output.z += (target.oz - output.z) * k;
 
       backdrop.material.uniforms.rand.value = Math.random() * 10000;
+
+      // Lerp material toward active/inactive target (triggered by window.__orbSetActive)
+      sphereMaterial.color.lerp(window.__orbTargetColor, 0.06);
+      sphereMaterial.emissive.lerp(window.__orbTargetEmissive, 0.06);
+      sphereMaterial.envMapIntensity +=
+        (activeTargetIntensity - sphereMaterial.envMapIntensity) * 0.06;
+      sphereMaterial.emissiveIntensity +=
+        (activeTargetEmissive - sphereMaterial.emissiveIntensity) * 0.06;
 
       if (sphereMaterial.userData.shader) {
         // 对齐原版：1 + (0.2 * data[1]) / 255

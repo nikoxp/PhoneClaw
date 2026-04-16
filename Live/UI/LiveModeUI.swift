@@ -67,9 +67,9 @@ struct LiveModeView: View {
     var body: some View {
         ZStack {
             // ── 最底层兜底色 ──
-            // OrbSceneView 的 WKWebView 初始加载 (~100-300ms) 期间是透明的,
-            // 不给底色会穿到上一层 view (Chat UI) 或系统背景, 造成入场白/灰闪屏。
-            // 给一个和 Orb 渲染好之后视觉连续的深色底打底.
+            // OrbSceneView 的 WKWebView 初始加载 (~100-300ms) 是透明的, 不给底色
+            // 会穿到上一层 view 或系统背景造成白闪. 同时 Orb 在 "准备中" 期间会
+            // 保持暗灰状态 (state == .idle), 这个底色也要和 Orb 暗态视觉连贯.
             Color(red: 0.08, green: 0.06, blue: 0.10)
                 .ignoresSafeArea()
 
