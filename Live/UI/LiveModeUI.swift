@@ -209,11 +209,11 @@ struct LiveModeView: View {
 
     private var captionArea: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // 用户文字 — 冷灰, partial 更浅
+            // 用户文字 — 冷灰
             if let current = currentUserCaption {
                 Text(current.text)
                     .font(.system(size: 15, weight: .regular))
-                    .foregroundStyle(Self.userCaptionColor.opacity(current.isLive ? 0.45 : 0.70))
+                    .foregroundStyle(Self.userCaptionColor.opacity(current.isLive ? 0.45 : 0.65))
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentTransition(.interpolate)
@@ -221,11 +221,11 @@ struct LiveModeView: View {
                     .transition(.opacity)
             }
 
-            // AI 回复 — 暖琥珀, 和 Orb 同色系
+            // AI 回复 — 暖琥珀, 透明度贴近 user, 同配方 streaming 动效
             if realtimeCaption == nil, !liveEngine.lastReply.isEmpty {
                 Text(liveEngine.lastReply)
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundStyle(Self.aiCaptionColor.opacity(0.85))
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(Self.aiCaptionColor.opacity(0.70))
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentTransition(.interpolate)
@@ -235,9 +235,10 @@ struct LiveModeView: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // 长 easeOut 营造"流式淡入"质感, 新 token 追加进文本时平滑内插
-        .animation(.easeOut(duration: 0.45), value: currentUserCaption?.text)
-        .animation(.easeOut(duration: 0.45), value: liveEngine.lastReply)
+        // 短 easeOut (0.18s): LLM 每 ~40ms 吐一个 token, 动画太长会堆叠;
+        // 短动画配合高频更新自然呈现 "字符从左到右渐出" 的流式质感.
+        .animation(.easeOut(duration: 0.18), value: currentUserCaption?.text)
+        .animation(.easeOut(duration: 0.18), value: liveEngine.lastReply)
     }
 
     // MARK: - 用户文字气泡

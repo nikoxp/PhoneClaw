@@ -60,6 +60,10 @@ enum OutputSanitizer {
                 with: "",
                 options: .regularExpression
             )
+            // liveVoice 额外剥裸 JSON 残骸 `{` `}` (Gemma 偶尔在文本中漏出, Sherpa TTS
+            // 会报 Ignore OOV 并朗读 "}" 出来). Chat UI 不剥 — 用户可能要粘代码.
+            processed = processed.replacingOccurrences(of: "{", with: "")
+            processed = processed.replacingOccurrences(of: "}", with: "")
         } else {
             // chatUI: strip tags but preserve [[PHONECLAW_THINK]] markers
             processed = stripMLTagsPreservingMarkers(processed)
