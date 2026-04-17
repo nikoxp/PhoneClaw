@@ -724,12 +724,16 @@ public class MLXLocalLLMService: LLMEngine {
                         // 加上 4.6 GB 已驻留 weights+KV 会撞 jetsam。
                         // 这是框架层修复，与 prompt 内容、skill 数量、SKILL.md
                         // 格式完全无关。
+                        // 2026-04-17: 256→128. E4B 42 层 chunk=256 真机 transient peak
+                        // 超预期 (~600-800 MB vs 理论 400 MB), 在稳态 headroom ~1100 MB
+                        // 下触发 jetsam. chunk=128 peak ~100-200 MB, 安全. 代价: prefill
+                        // 吞吐降 ~10-15% (更多 eval 间隔). 无功能损失.
                         let generateParams = GenerateParameters(
                             maxTokens: resolvedMaxOutputTokens,
                             temperature: samplingTemperature,
                             topP: samplingTopP,
                             topK: samplingTopK,
-                            prefillStepSize: 256
+                            prefillStepSize: 128
                         )
 
                         // Plan KV reuse (text-only). On multimodal / disabled /

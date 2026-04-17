@@ -325,14 +325,16 @@ class AgentEngine {
         // 动机: Router 的 substring trigger 命中存在大量边界 fail (e.g. 用户说
         // "评审会"但 trigger 是"会议", 用户说"查王总电话"但 trigger 是"查电话"),
         // 漏掉一个 skill → planner 没被触发 → 多 skill 任务退化成单 skill agent 路径,
-        // 漏掉的那个 skill 的工具完全不会被调用. 长期最优解不是补 trigger
-        // (rule whack-a-mole), 而是让 Selection LLM 在 matched 不充分时介入决策.
+        // T2c-revert (2026-04-17): 恢复 matched>=2 门槛.
         //
-        // matched=1 时进入 Planner → Selection LLM 用全 skill 集合判断:
-        //  - 真单 skill: Selection 返回 1, Planner 返回 false, 落回 agent 路径
-        //  - 多 skill 漏匹配: Selection 返回 >=2, 进入正常 plan 流程
-        // 代价: matched=1 真单 skill 场景多一次短 selection LLM call (~0.5-1s).
-        let shouldUsePlanner = !requiresMultimodal && matchedSkillIdsForTurn.count >= 1
+        // T2c 把门槛从 >=2 改成 >=1, 让 Selection LLM 每轮都跑.
+        // 真机验证: Selection 每次 ~1400 tok 全量 prefill (KV hit 4-6%),
+        // E4B 稳态 headroom ~1000-1200 MB, 多轮必崩 (jetsam).
+        // 且 Selection 实际表现: matched=1 返回同一个 skill (白跑),
+        // matched=2 返回子集 (比 Router 更差). 收益 < 0, 风险 = jetsam.
+        //
+        // 回到 >=2: 单 skill 直接 agent 路径, 不进 Planner, 不跑 Selection.
+        let shouldUsePlanner = !requiresMultimodal && matchedSkillIdsForTurn.count >= 2
         let shouldUseFullAgentPrompt =
             !requiresMultimodal
             && shouldUseToolingPrompt(for: normalizedText)
