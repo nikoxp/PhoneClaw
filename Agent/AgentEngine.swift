@@ -142,8 +142,9 @@ class AgentEngine {
                     return resolvedInstaller.artifactPath(for: desc)
                 },
                 onModelLoaded: { [weak resolvedCatalog] modelID in
-                    if let desc = ModelDescriptor.allModels.first(where: { $0.id == modelID }) {
-                        resolvedCatalog?.markLoaded(desc)
+                    if let cat = resolvedCatalog,
+                       let desc = cat.availableModels.first(where: { $0.id == modelID }) {
+                        cat.markLoaded(desc)
                     }
                 },
                 onModelUnloaded: { [weak resolvedCatalog] in
