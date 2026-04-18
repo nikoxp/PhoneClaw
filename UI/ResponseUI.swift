@@ -53,45 +53,11 @@ struct AIResponseView: View {
                 }
 
                 if let text = block.responseText {
-                    if block.isThinking {
-                        // ── Streaming: two-layer render ──
-                        // Split at last newline:
-                        //   • completedText → full Markdown (stable, no re-parse jumps)
-                        //   • currentLine   → plain Text (no AST surprises)
-                        let split = Self.splitStreamingText(text)
-                        VStack(alignment: .leading, spacing: 0) {
-                            if !split.completed.isEmpty {
-                                Markdown(split.completed)
-                                    .markdownTextStyle {
-                                        FontSize(15)
-                                        ForegroundColor(Theme.textPrimary)
-                                    }
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            if !split.current.isEmpty {
-                                Text(split.current)
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(Theme.textPrimary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .animation(nil, value: split.current)
-                            }
-                        }
-                        .padding(.leading, 4)
-                    } else {
-                        // ── Complete: full Markdown in one pass ──
-                        Markdown(text)
-                            .markdownTextStyle {
-                                FontSize(15)
-                                ForegroundColor(Theme.textPrimary)
-                            }
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.leading, 4)
-                    }
+                    StreamingMarkdownView(
+                        content: text,
+                        isStreaming: block.isThinking
+                    )
+                    .padding(.leading, 4)
                 }
 
                 if let onRetry, !block.isThinking {
@@ -114,21 +80,102 @@ struct AIResponseView: View {
             Spacer(minLength: Theme.aiMinSpacer)
         }
     }
+}
 
-    // MARK: - Streaming Text Splitter
+// MARK: - Streaming Markdown (Typewriter Pattern)
 
-    /// Split streaming text at the last newline boundary.
-    /// - `completed`: all lines up through the last `\n` — safe for Markdown (syntax is finalized)
-    /// - `current`: the partial line after the last `\n` — rendered as plain Text (no AST surprises)
-    private static func splitStreamingText(_ text: String) -> (completed: String, current: String) {
-        guard let lastNewline = text.lastIndex(of: "\n") else {
-            // No newline yet — everything is "current line"
-            return ("", text)
+/// Renders markdown with a character-queue typewriter effect during streaming.
+///
+/// Instead of feeding entire token strings to MarkdownUI on every update
+/// (which causes layout jumps when block-level syntax like ### forms),
+/// new characters are queued and fed one-by-one via a Timer.
+/// This makes markdown syntax appear naturally as "typed out" text.
+///
+/// Based on the GetStream production pattern:
+/// https://github.com/GetStream/stream-chat-swift-ai
+private struct StreamingMarkdownView: View {
+    let content: String
+    let isStreaming: Bool
+
+    @State private var displayedText: String = ""
+    @State private var characterQueue: [Character] = []
+    @State private var typingTimer: Timer?
+
+    /// Characters per tick. At 5ms interval, this controls visual speed.
+    /// 3 chars × 200 ticks/sec = 600 chars/sec — fast enough to keep up
+    /// with ~25 tok/s LiteRT output without visible lag.
+    private let charsPerTick = 3
+    private let tickInterval: TimeInterval = 0.005
+
+    var body: some View {
+        Markdown(displayedText)
+            .markdownTextStyle {
+                FontSize(15)
+                ForegroundColor(Theme.textPrimary)
+            }
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .onAppear {
+                if !isStreaming {
+                    displayedText = content
+                    return
+                }
+                characterQueue.append(contentsOf: content)
+                startTimer()
+            }
+            .onDisappear {
+                typingTimer?.invalidate()
+                typingTimer = nil
+            }
+            .onChange(of: content) { newValue in
+                if !isStreaming {
+                    // Generation done — snap to final content
+                    typingTimer?.invalidate()
+                    typingTimer = nil
+                    characterQueue.removeAll()
+                    displayedText = newValue
+                    return
+                }
+                // Find new characters and enqueue
+                let newChunk: String
+                if newValue.hasPrefix(displayedText + String(characterQueue)) {
+                    let alreadyKnown = displayedText.count + characterQueue.count
+                    let start = newValue.index(newValue.startIndex, offsetBy: alreadyKnown)
+                    newChunk = String(newValue[start...])
+                } else {
+                    let common = (displayedText + String(characterQueue)).commonPrefix(with: newValue)
+                    let start = newValue.index(newValue.startIndex, offsetBy: common.count)
+                    newChunk = String(newValue[start...])
+                }
+                characterQueue.append(contentsOf: newChunk)
+                if typingTimer == nil { startTimer() }
+            }
+            .onChange(of: isStreaming) { streaming in
+                if !streaming {
+                    // Flush remaining queue
+                    typingTimer?.invalidate()
+                    typingTimer = nil
+                    characterQueue.removeAll()
+                    displayedText = content
+                }
+            }
+    }
+
+    private func startTimer() {
+        typingTimer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { _ in
+            guard !characterQueue.isEmpty else {
+                if !isStreaming {
+                    typingTimer?.invalidate()
+                    typingTimer = nil
+                }
+                return
+            }
+            let count = min(charsPerTick, characterQueue.count)
+            let chars = characterQueue.prefix(count)
+            characterQueue.removeFirst(count)
+            displayedText.append(contentsOf: chars)
         }
-        let completed = String(text[text.startIndex...lastNewline])
-        let afterNewline = text.index(after: lastNewline)
-        let current = afterNewline < text.endIndex ? String(text[afterNewline...]) : ""
-        return (completed, current)
     }
 }
 
