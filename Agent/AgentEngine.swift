@@ -403,7 +403,7 @@ class AgentEngine {
             route: routedPath,
             skillCount: matchedSkillIdsForTurn.count,
             multimodal: requiresMultimodal,
-            inputChars: input.count,
+            inputChars: text.count,
             historyDepth: historyDepth,
             headroomMB: MemoryStats.headroomMB
         )
