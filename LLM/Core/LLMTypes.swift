@@ -24,6 +24,46 @@ public struct AudioInput: Sendable {
         self.sampleRate = sampleRate
         self.channelCount = channelCount
     }
+
+    /// 编码为 16-bit PCM WAV Data (适配 LiteRT-LM 音频输入)
+    public var wavData: Data {
+        let integerSampleRate = max(Int(sampleRate.rounded()), 1)
+        let clampedSamples = samples.map { sample -> Int16 in
+            let limited = min(max(sample, -1), 1)
+            return Int16((limited * Float(Int16.max)).rounded())
+        }
+
+        let bytesPerSample = MemoryLayout<Int16>.size
+        let dataChunkSize = clampedSamples.count * bytesPerSample
+        let riffChunkSize = 36 + dataChunkSize
+        let byteRate = integerSampleRate * channelCount * bytesPerSample
+        let blockAlign = channelCount * bytesPerSample
+
+        var data = Data()
+        data.reserveCapacity(44 + dataChunkSize)
+
+        func appendLE<T: FixedWidthInteger>(_ value: T) {
+            var le = value.littleEndian
+            withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
+        }
+
+        data.append("RIFF".data(using: .ascii)!)
+        appendLE(UInt32(riffChunkSize))
+        data.append("WAVE".data(using: .ascii)!)
+        data.append("fmt ".data(using: .ascii)!)
+        appendLE(UInt32(16))
+        appendLE(UInt16(1))
+        appendLE(UInt16(channelCount))
+        appendLE(UInt32(integerSampleRate))
+        appendLE(UInt32(byteRate))
+        appendLE(UInt16(blockAlign))
+        appendLE(UInt16(bytesPerSample * 8))
+        data.append("data".data(using: .ascii)!)
+        appendLE(UInt32(dataChunkSize))
+        for sample in clampedSamples { appendLE(sample) }
+
+        return data
+    }
 }
 
 // MARK: - Inference Stats (替代 LLMStats)

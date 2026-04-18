@@ -65,8 +65,15 @@ final class LiteRTModelStore: ModelInstaller {
                     // 下载
                     let (asyncBytes, response) = try await URLSession.shared.bytes(from: model.downloadURL)
 
+                    // HTTP 状态校验 — 防止 404/403 错误页被当作模型文件保存
+                    if let httpResponse = response as? HTTPURLResponse,
+                       !(200..<300).contains(httpResponse.statusCode) {
+                        throw DownloadError.httpStatus(httpResponse.statusCode)
+                    }
+
                     let totalSize = (response as? HTTPURLResponse)
                         .flatMap { $0.expectedContentLength > 0 ? $0.expectedContentLength : nil }
+                        ?? model.expectedFileSize
 
                     let fileHandle = try FileHandle(forWritingTo: {
                         FileManager.default.createFile(atPath: tempURL.path, contents: nil)
@@ -103,6 +110,15 @@ final class LiteRTModelStore: ModelInstaller {
                         fileHandle.write(buffer)
                     }
                     try fileHandle.close()
+
+                    // 文件大小校验 — 捕获截断下载
+                    let fileAttrs = try FileManager.default.attributesOfItem(atPath: tempURL.path)
+                    let actualSize = (fileAttrs[.size] as? Int64) ?? 0
+                    if model.expectedFileSize > 0, actualSize < model.expectedFileSize / 2 {
+                        // 实际大小不到预期的一半 — 明显不完整
+                        try? FileManager.default.removeItem(at: tempURL)
+                        throw DownloadError.invalidResponse
+                    }
 
                     // 移动到最终位置
                     try? FileManager.default.removeItem(at: destURL)

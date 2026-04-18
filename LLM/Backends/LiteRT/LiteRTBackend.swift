@@ -8,9 +8,11 @@ import LiteRTLMSwift
 // CPU-only，无 GPU 分支。
 //
 // 推理路径:
-//   - 纯文本: persistent Session API → sessionGenerateStreaming()
-//   - 多模态 (图/音): Conversation API → conversationSend()
-//   - Raw text (Live): Session API with raw turn markers
+//   - 纯文本: one-shot generateStreaming() (每次调用创建临时 session)
+//   - 多模态 (图/音): Conversation API → multimodal()
+//   - Raw text (Live): 也走 one-shot generateStreaming
+//
+// TODO: 后续优化 — 换用 persistent session + 增量输入实现 KV cache 复用
 //
 // 模型管理 (load/unload/select) 在这里实现。
 // 资产管理 (download/install/path) 在 LiteRTModelStore 里。
@@ -91,11 +93,8 @@ final class LiteRTBackend: InferenceService {
             let newEngine = LiteRTLMEngine(modelPath: modelPath, backend: "cpu")
             try await newEngine.load()
 
-            // 打开 persistent session (KV cache 复用)
-            try await newEngine.openSession(
-                temperature: samplingTemperature,
-                maxTokens: maxOutputTokens
-            )
+            // 当前使用 one-shot session (每次 generate 创建临时 session)。
+            // persistent session + 增量输入的 KV cache 复用留到后续优化。
 
             self.engine = newEngine
             self.loadedModelID = modelID
@@ -158,7 +157,14 @@ final class LiteRTBackend: InferenceService {
                 var firstTokenTime: Double?
 
                 do {
-                    for try await token in engine.sessionGenerateStreaming(input: prompt) {
+                    // 使用 one-shot generateStreaming — 每次调用创建独立 session。
+                    // prompt 包含完整 turn marker 模板 (system + history + user turn)。
+                    // 避免 persistent session 的"只接受增量输入"语义问题。
+                    for try await token in engine.generateStreaming(
+                        prompt: prompt,
+                        temperature: self.samplingTemperature,
+                        maxTokens: self.maxOutputTokens
+                    ) {
                         if self.cancelled {
                             continuation.finish()
                             break
@@ -224,22 +230,19 @@ final class LiteRTBackend: InferenceService {
                     }
 
                     // 把 AudioInput 转 WAV Data
-                    var audiosData: [Data] = []
-                    for audio in audios {
-                        let wavData = ChatAudioAttachment.makeWAVData(
-                            pcm: audio.samples,
-                            sampleRate: audio.sampleRate,
-                            channelCount: audio.channelCount
-                        )
-                        audiosData.append(wavData)
-                    }
+                    let audiosData = audios.map { $0.wavData }
+
+                    // 构造完整 prompt (含 systemPrompt)
+                    let fullPrompt = systemPrompt.isEmpty
+                        ? prompt
+                        : systemPrompt + "\n" + prompt
 
                     // 走 Conversation API (非流式，当前 LiteRTLMEngine 没有封装 conversation stream)
                     // TODO: 补 conversationSendStreaming 后改为流式
                     let result = try await engine.multimodal(
                         audioData: audiosData,
                         imagesData: imagesData,
-                        prompt: prompt
+                        prompt: fullPrompt
                     )
 
                     if !self.cancelled {
