@@ -97,85 +97,74 @@ private struct StreamingMarkdownView: View {
     let content: String
     let isStreaming: Bool
 
-    @State private var displayedText: String = ""
-    @State private var characterQueue: [Character] = []
-    @State private var typingTimer: Timer?
-
-    /// Characters per tick. At 5ms interval, this controls visual speed.
-    /// 3 chars × 200 ticks/sec = 600 chars/sec — fast enough to keep up
-    /// with ~25 tok/s LiteRT output without visible lag.
-    private let charsPerTick = 3
-    private let tickInterval: TimeInterval = 0.005
+    /// Committed text: complete lines only, safe for Markdown rendering.
+    @State private var committedText: String = ""
+    /// Current partial line: not yet terminated by \n, shown as plain Text.
+    @State private var pendingLine: String = ""
 
     var body: some View {
-        Markdown(displayedText)
-            .markdownTextStyle {
-                FontSize(15)
-                ForegroundColor(Theme.textPrimary)
+        VStack(alignment: .leading, spacing: 0) {
+            if !committedText.isEmpty {
+                Markdown(committedText)
+                    .markdownTextStyle {
+                        FontSize(15)
+                        ForegroundColor(Theme.textPrimary)
+                    }
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .onAppear {
-                if !isStreaming {
-                    displayedText = content
-                    return
-                }
-                characterQueue.append(contentsOf: content)
-                startTimer()
+            if isStreaming && !pendingLine.isEmpty {
+                Text(pendingLine)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .animation(nil, value: pendingLine)
             }
-            .onDisappear {
-                typingTimer?.invalidate()
-                typingTimer = nil
-            }
-            .onChange(of: content) { newValue in
-                if !isStreaming {
-                    // Generation done — snap to final content
-                    typingTimer?.invalidate()
-                    typingTimer = nil
-                    characterQueue.removeAll()
-                    displayedText = newValue
-                    return
-                }
-                // Find new characters and enqueue
-                let newChunk: String
-                if newValue.hasPrefix(displayedText + String(characterQueue)) {
-                    let alreadyKnown = displayedText.count + characterQueue.count
-                    let start = newValue.index(newValue.startIndex, offsetBy: alreadyKnown)
-                    newChunk = String(newValue[start...])
-                } else {
-                    let common = (displayedText + String(characterQueue)).commonPrefix(with: newValue)
-                    let start = newValue.index(newValue.startIndex, offsetBy: common.count)
-                    newChunk = String(newValue[start...])
-                }
-                characterQueue.append(contentsOf: newChunk)
-                if typingTimer == nil { startTimer() }
-            }
-            .onChange(of: isStreaming) { streaming in
-                if !streaming {
-                    // Flush remaining queue
-                    typingTimer?.invalidate()
-                    typingTimer = nil
-                    characterQueue.removeAll()
-                    displayedText = content
-                }
-            }
-    }
-
-    private func startTimer() {
-        typingTimer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { _ in
-            guard !characterQueue.isEmpty else {
-                if !isStreaming {
-                    typingTimer?.invalidate()
-                    typingTimer = nil
-                }
+        }
+        .onAppear {
+            if !isStreaming {
+                committedText = content
                 return
             }
-            let count = min(charsPerTick, characterQueue.count)
-            let chars = characterQueue.prefix(count)
-            characterQueue.removeFirst(count)
-            displayedText.append(contentsOf: chars)
+            applyDelta(from: "", to: content)
         }
+        .onChange(of: content) { newValue in
+            if !isStreaming {
+                committedText = newValue
+                pendingLine = ""
+                return
+            }
+            let oldFull = committedText + pendingLine
+            applyDelta(from: oldFull, to: newValue)
+        }
+        .onChange(of: isStreaming) { streaming in
+            if !streaming {
+                committedText = content
+                pendingLine = ""
+            }
+        }
+    }
+
+    /// Compute what's new, append to pendingLine, flush complete lines.
+    private func applyDelta(from oldText: String, to newText: String) {
+        let commonLen = oldText.commonPrefix(with: newText).count
+        let start = newText.index(newText.startIndex, offsetBy: commonLen)
+        let newChars = String(newText[start...])
+
+        pendingLine += newChars
+        flushCompleteLines()
+    }
+
+    /// Move all complete lines (terminated by \n) from pendingLine → committedText.
+    /// MarkdownUI only re-parses when committedText changes, and it always
+    /// receives fully-formed lines — no half-formed **, #, ``` markers.
+    private func flushCompleteLines() {
+        guard let lastNL = pendingLine.lastIndex(of: "\n") else { return }
+        let cutoff = pendingLine.index(after: lastNL)
+        committedText += String(pendingLine[pendingLine.startIndex..<cutoff])
+        pendingLine = String(pendingLine[cutoff...])
     }
 }
 
