@@ -202,17 +202,17 @@ final class LiteRTBackend: InferenceService {
                     if let ttft = firstTokenTime {
                         self.stats.ttftMs = ttft
                     }
-                    self.stats.totalTokens = tokenCount
+                    self.stats.totalChunks = tokenCount
                     let elapsed = CFAbsoluteTimeGetCurrent() - startTime
                     if elapsed > 0, tokenCount > 0 {
-                        self.stats.tokensPerSec = Double(tokenCount) / elapsed
+                        self.stats.chunksPerSec = Double(tokenCount) / elapsed
                     }
                     // Structured perf log — prefill split comes from engine's
                     // internal benchmark; here we emit aggregate decode stats.
                     PCLog.perf(
                         ttftMs: Int(self.stats.ttftMs),
                         chunks: tokenCount,
-                        chunksPerSec: self.stats.tokensPerSec,
+                        chunksPerSec: self.stats.chunksPerSec,
                         headroomMB: MemoryStats.headroomMB
                     )
                 }

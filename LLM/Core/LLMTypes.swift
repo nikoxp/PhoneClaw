@@ -78,12 +78,16 @@ public struct AudioInput: Sendable {
 // MARK: - Inference Stats (替代 LLMStats)
 
 /// 推理统计信息，不绑定具体后端。
+///
+/// `totalChunks` / `chunksPerSec` 统计的是 stream yield 次数，
+/// 不一定等于 tokenizer token 数（LiteRT 一次 yield 可能包含多个 token）。
+/// 真实 token 级指标见 `[Engine]` 日志行（来自 C benchmark API）。
 public struct InferenceStats: Sendable {
     public var loadTimeMs: Double = 0
     public var ttftMs: Double = 0          // time to first token
-    public var tokensPerSec: Double = 0
+    public var chunksPerSec: Double = 0    // stream yield throughput
     public var peakMemoryMB: Double = 0
-    public var totalTokens: Int = 0
+    public var totalChunks: Int = 0        // stream yield count
     public var backend: String = "unknown" // "litert-cpu" / "mlx-gpu"
 
     public init() {}

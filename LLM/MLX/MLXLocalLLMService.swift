@@ -874,16 +874,16 @@ public class MLXLocalLLMService: LLMEngine, InferenceService {
 
                     let elapsed = CFAbsoluteTimeGetCurrent() - genStart
                     self.stats.ttftMs = firstTokenTime ?? 0
-                    self.stats.tokensPerSec = elapsed > 0
+                    self.stats.chunksPerSec = elapsed > 0
                         ? Double(tokenCount) / elapsed : 0
-                    self.stats.totalTokens = tokenCount
+                    self.stats.totalChunks = tokenCount
 
                     print(
                         "[MLX] Generated \(tokenCount) tokens in \(String(format: "%.1f", elapsed))s"
                     )
                     print(
                         "[MLX] TTFT: \(String(format: "%.0f", self.stats.ttftMs))ms, "
-                            + "Speed: \(String(format: "%.1f", self.stats.tokensPerSec)) tok/s")
+                            + "Speed: \(String(format: "%.1f", self.stats.chunksPerSec)) tok/s")
 
                     // 推理结束后立即释放 Metal activation 缓存，
                     // 确保下一轮有最大可用 headroom。
