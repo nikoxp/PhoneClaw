@@ -391,7 +391,6 @@ class AgentEngine {
         let headroomMB = Double(MemoryStats.headroomMB)
         let historyDepth = requiresMultimodal ? 0 : policy.safeHistoryDepth(headroomMB: headroomMB)
         let plannerHistoryDepth = shouldUsePlanner ? 0 : historyDepth
-        print("[MEM] safeHistoryDepth=\(historyDepth), headroom=\(MemoryStats.headroomMB) MB")
         let promptImages = promptImages(historyDepth: historyDepth, currentImages: attachments)
 
         let routedPath = Self.decideRoute(

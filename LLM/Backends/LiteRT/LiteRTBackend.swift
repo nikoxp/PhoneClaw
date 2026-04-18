@@ -207,6 +207,16 @@ final class LiteRTBackend: InferenceService {
                     if elapsed > 0, tokenCount > 0 {
                         self.stats.tokensPerSec = Double(tokenCount) / elapsed
                     }
+                    // Structured perf log — prefill split comes from engine's
+                    // internal benchmark; here we emit aggregate decode stats.
+                    PCLog.perf(
+                        ttftMs: Int(self.stats.ttftMs),
+                        prefillTokens: 0,  // engine-internal
+                        prefillTps: 0,     // engine-internal
+                        decodeTokens: tokenCount,
+                        decodeTps: self.stats.tokensPerSec,
+                        headroomMB: MemoryStats.headroomMB
+                    )
                 }
             }
         }
