@@ -126,25 +126,32 @@ class AgentEngine {
         catalog: ModelCatalog? = nil,
         installer: ModelInstaller? = nil
     ) {
-        let litertCatalog = (catalog as? LiteRTCatalog) ?? LiteRTCatalog()
-        let litertStore = LiteRTModelStore()
-        let resolvedCatalog = litertCatalog
-        self.inference = inference ?? LiteRTBackend(
-            modelPathResolver: { modelID in
-                guard let desc = resolvedCatalog.availableModels.first(where: { $0.id == modelID }) else { return nil }
-                return litertStore.artifactPath(for: desc)
-            },
-            onModelLoaded: { [weak resolvedCatalog] modelID in
-                if let desc = ModelDescriptor.allModels.first(where: { $0.id == modelID }) {
-                    resolvedCatalog?.markLoaded(desc)
+        let resolvedCatalog = catalog ?? LiteRTCatalog()
+        let resolvedInstaller = installer ?? LiteRTModelStore()
+        self.catalog = resolvedCatalog
+        self.installer = resolvedInstaller
+
+        if let inference {
+            self.inference = inference
+        } else {
+            // callbacks 闭包捕获 resolvedCatalog — 和 self.catalog 是同一个对象,
+            // 无论调用方注入哪种 ModelCatalog 实现都能正确同步 loadedModel.
+            self.inference = LiteRTBackend(
+                modelPathResolver: { modelID in
+                    guard let desc = resolvedCatalog.availableModels.first(where: { $0.id == modelID }) else { return nil }
+                    return resolvedInstaller.artifactPath(for: desc)
+                },
+                onModelLoaded: { [weak resolvedCatalog] modelID in
+                    if let desc = ModelDescriptor.allModels.first(where: { $0.id == modelID }) {
+                        resolvedCatalog?.markLoaded(desc)
+                    }
+                },
+                onModelUnloaded: { [weak resolvedCatalog] in
+                    resolvedCatalog?.markUnloaded()
                 }
-            },
-            onModelUnloaded: { [weak resolvedCatalog] in
-                resolvedCatalog?.markUnloaded()
-            }
-        )
-        self.catalog = catalog ?? resolvedCatalog
-        self.installer = installer ?? litertStore
+            )
+        }
+
         loadSkillEntries()
         currentSessionID =
             UUID(uuidString: UserDefaults.standard.string(forKey: Self.currentSessionDefaultsKey) ?? "")

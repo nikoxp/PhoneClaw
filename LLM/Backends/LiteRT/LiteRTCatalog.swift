@@ -39,7 +39,7 @@ final class LiteRTCatalog: ModelCatalog {
         )
     }
 
-    // MARK: - Internal (called by LiteRTBackend on load/unload)
+    // MARK: - ModelCatalog: Load State
 
     func markLoaded(_ model: ModelDescriptor) {
         loadedModel = model

@@ -28,6 +28,12 @@ public protocol ModelCatalog: AnyObject {
 
     /// 查询指定模型的运行时策略
     func runtimePolicy(for modelID: String) -> RuntimePolicy
+
+    /// 后端加载成功后调用，同步 loadedModel 状态
+    func markLoaded(_ model: ModelDescriptor)
+
+    /// 后端卸载后调用，清除 loadedModel 状态
+    func markUnloaded()
 }
 
 // MARK: - Convenience
