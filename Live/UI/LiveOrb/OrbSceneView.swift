@@ -359,7 +359,7 @@ void main() {
       metalness: 0.85,
       roughness: 0.25,
       emissive: 0x1a0f04,
-      emissiveIntensity: 0  // Start dark, native controls via brightness
+      emissiveIntensity: 0.15  // 初始微亮, native 通过 brightness 控制
     });
 
     sphereMaterial.onBeforeCompile = (shader) => {
@@ -416,8 +416,9 @@ void main() {
     const input  = { x: 0, y: 0, z: 0 };
     const output = { x: 0, y: 0, z: 0 };
     const target = { ix: 0, iy: 0, iz: 0, ox: 0, oy: 0, oz: 0 };
-    let targetBrightness = 0;
-    let currentBrightness = 0;
+    const baseDim = 0.12;  // 加载时的底亮度 (隐约可见金属球体)
+    let targetBrightness = baseDim;
+    let currentBrightness = baseDim;
     const rotation = new THREE.Vector3(0, 0, 0);
     let prevTime = performance.now();
 
@@ -425,7 +426,8 @@ void main() {
     window.__orbUpdate = (i0, i1, i2, o0, o1, o2, br) => {
       target.ix = i0; target.iy = i1; target.iz = i2;
       target.ox = o0; target.oy = o1; target.oz = o2;
-      targetBrightness = (br !== undefined) ? br : 1;
+      // brightness: 0 = 加载中 (用 baseDim), 1 = 全亮
+      targetBrightness = (br !== undefined && br > 0.5) ? 1.0 : baseDim;
     };
 
     function animate() {
@@ -446,11 +448,18 @@ void main() {
 
       backdrop.material.uniforms.rand.value = Math.random() * 10000;
 
-      // Smooth brightness transition (dark ↔ bright)
-      currentBrightness += (targetBrightness - currentBrightness) * 0.08;
-      sphereMaterial.emissiveIntensity = baseEmissiveIntensity * currentBrightness;
-      sphereMaterial.envMapIntensity = currentBrightness;
-      sphere.visible = currentBrightness > 0.01;
+      // Smooth brightness transition: ~2s linear ramp (120 frames at 60fps)
+      // 匹配 TTS 播放时长, 让 "从暗到亮" 和 "听到声音" 在体感上同步
+      const brightnessSpeed = 0.008;  // 1/120 ≈ 2s
+      if (currentBrightness < targetBrightness) {
+        currentBrightness = Math.min(currentBrightness + brightnessSpeed, targetBrightness);
+      } else if (currentBrightness > targetBrightness) {
+        currentBrightness = Math.max(currentBrightness - brightnessSpeed * 3, targetBrightness);
+      }
+      // easeInOut 曲线: smoothstep 让开头和结尾更平滑
+      const eased = currentBrightness * currentBrightness * (3 - 2 * currentBrightness);
+      sphereMaterial.emissiveIntensity = baseEmissiveIntensity * eased;
+      sphereMaterial.envMapIntensity = eased;
 
       if (sphereMaterial.userData.shader) {
         // 对齐原版：1 + (0.2 * data[1]) / 255
