@@ -449,8 +449,8 @@ void main() {
       // Smooth brightness transition (dark ↔ bright)
       currentBrightness += (targetBrightness - currentBrightness) * 0.08;
       sphereMaterial.emissiveIntensity = baseEmissiveIntensity * currentBrightness;
-      sphereMaterial.opacity = 0.15 + 0.85 * currentBrightness;
-      sphereMaterial.transparent = true;
+      sphereMaterial.envMapIntensity = currentBrightness;
+      sphere.visible = currentBrightness > 0.01;
 
       if (sphereMaterial.userData.shader) {
         // 对齐原版：1 + (0.2 * data[1]) / 255
