@@ -367,46 +367,67 @@ class LiveModeEngine {
             }
         }
 
-        // Announce then listen, with concurrent LLM warmup
+        // Announce then listen, with session-powered greeting.
+        // 用真实 session 推理替代 warmup + 固定 TTS, 一举三得:
+        //   1. shader 预热 (首次推理触发 XNNPACK 编译)
+        //   2. system prompt 灌入 KV cache (后续 turn 走 delta ~300ms)
+        //   3. model 生成自然的自我介绍 (比固定文本更灵活)
+        // 用户体感: "加载中" → 听到自我介绍 → "加载完成" → 开始对话
         turnPhase = .speaking
         state = .speaking
+        statusMessage = "正在准备"
 
-        // Kick off LLM shader warmup concurrently with TTS greeting.
-        // Only for small models (E2B) where warmup is safe; E4B skips due to OOM risk.
-        // 注意: 必须用 generateOneShot(maxTokens:2), 不能用 generate/generateRaw.
-        // LiteRTLM 的 C API 在 inferenceQueue 上同步跑完全部 maxTokens,
-        // break/cancel 只停消费端. maxTokens=2 确保底层只跑 prefill+2 decode (~1s).
-        let warmupTask: Task<Void, Never>? = {
-            guard let inference = self.inference, inference.isLoaded else { return nil }
-            return Task {
-                let t0 = CFAbsoluteTimeGetCurrent()
-                if let litert = inference as? LiteRTBackend {
-                    let stream = litert.generateOneShot(prompt: "你好", maxTokens: 2)
-                    do { for try await _ in stream { break } } catch {}
-                }
-                inference.cancel()
-                let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                print("[Live] ⚡ LLM warmup done in \(Int(ms))ms")
-            }
-        }()
-
-        // TTS 开始前就结束 "正在加载" 状态 — 用户听到声音 = 加载完成
-        // (tts.speak 会阻塞 ~1.2s 等音频播完, 原来的 statusMessage 在 speak 之后
-        //  才更新, 导致整段 TTS 播放期间 UI 还在显示"正在加载", 和语音反馈错位)
-        statusMessage = ""
-        await tts.speak("我在听，请说话。")
-        lastAssistantPlaybackEndTime = CFAbsoluteTimeGetCurrent()
-
-        // Wait for warmup if it's still running (usually finishes before TTS)
-        await warmupTask?.value
-
-        // Open fresh persistent session for Live KV cache reuse.
-        // Warmup's generateOneShot 已关闭旧 session, 这里新建一个.
-        // 首轮 Live turn 走全量 prefill, 后续走 delta (~300ms TTFT).
+        // 1. 开 persistent session
         if let litert = inference as? LiteRTBackend {
             await litert.resetKVSession()
         }
 
+        // 2. 用完整 Live prompt 生成自我介绍 (通过 session, 缓存 system prompt)
+        var greetingText = ""
+        if let inference, inference.isLoaded {
+            let greetingPrompt = PromptBuilder.buildLiveVoicePrompt(
+                userSystemPrompt: userSystemPrompt,
+                locale: .zhCN,
+                history: [],
+                historyDepth: 0,
+                userTranscript: "你好",
+                hasVision: false
+            )
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let stream = inference.generate(prompt: greetingPrompt)
+            do {
+                for try await token in stream {
+                    greetingText += token
+                }
+            } catch {}
+            let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            print("[Live] 🎤 Greeting generated in \(Int(ms))ms: \"\(greetingText.prefix(80))\"")
+        }
+
+        guard turnPhase == .speaking else { return }
+
+        // 3. 解析 marker + 清理输出, TTS 播报
+        let cleaned = OutputSanitizer.sanitizeFinal(greetingText, mode: .liveVoice)
+        let spoken: String
+        if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            spoken = "我在听，请说话。"  // 兜底
+        } else {
+            // 去掉 marker (✓/○/◐) 前缀
+            var text = cleaned
+            for prefix in ["✓ ", "○ ", "◐ "] {
+                if text.hasPrefix(prefix) {
+                    text = String(text.dropFirst(prefix.count))
+                    break
+                }
+            }
+            spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        statusMessage = ""
+        await tts.speak(spoken)
+        lastAssistantPlaybackEndTime = CFAbsoluteTimeGetCurrent()
+
+        // 4. session 已有 context (system + greeting), 后续 turn 走 delta
         guard turnPhase == .speaking else { return }
 
         turnPhase = .listening
