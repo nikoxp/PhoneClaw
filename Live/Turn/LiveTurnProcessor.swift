@@ -95,7 +95,7 @@ final class LiveTurnProcessor {
            litert.kvSessionActive
         {
             // 纯文本 + session 活跃: 走 persistent session (KV cache 复用)
-            if history.isEmpty {
+            if !litert.sessionHasContext {
                 // 首轮: 完整 prompt → 全量 prefill
                 tokenStream = inference.generate(prompt: fullPrompt)
             } else {

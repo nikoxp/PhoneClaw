@@ -536,8 +536,8 @@ class AgentEngine {
         let streamingPrompt: String
         if let litert = inference as? LiteRTBackend,
            litert.kvSessionActive,
-           !messages.isEmpty,            // 有历史 = 不是首轮
-           agentPrompt == nil            // agent 路径暂不走 delta
+           litert.sessionHasContext,      // session 已有 context = 非首轮
+           agentPrompt == nil             // agent 路径暂不走 delta
         {
             streamingPrompt = PromptBuilder.buildDeltaTurnPrompt(
                 userMessage: normalizedText,

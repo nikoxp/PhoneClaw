@@ -45,6 +45,9 @@ final class LiteRTBackend: InferenceService {
     // MARK: - KV Cache Session State
     /// persistent session 是否已打开
     private(set) var kvSessionActive = false
+    /// session 是否已有 context (已发过至少一次 input)
+    /// 用于判断 delta vs 全量: session 有 context → 发 delta, 否则全量.
+    private(set) var sessionHasContext = false
     /// 上一轮 model 输出 (用于拼 delta)。空 = 首轮。
     private(set) var lastModelOutput: String = ""
 
@@ -163,6 +166,7 @@ final class LiteRTBackend: InferenceService {
         guard let engine, isLoaded else { return }
         engine.closeSession()
         kvSessionActive = false
+        sessionHasContext = false
         lastModelOutput = ""
         do {
             try await engine.openSession(
@@ -181,6 +185,7 @@ final class LiteRTBackend: InferenceService {
     /// 下次 generate() 检测到 !kvSessionActive 时自动重建.
     func invalidateKVSession() {
         kvSessionActive = false
+        sessionHasContext = false
     }
 
     func cancel() {
@@ -226,6 +231,7 @@ final class LiteRTBackend: InferenceService {
                     if useSession {
                         // Persistent session: prompt 是增量 delta，KV cache 复用
                         stream = engine.sessionGenerateStreaming(input: prompt)
+                        await MainActor.run { self.sessionHasContext = true }
                     } else {
                         // Fallback: one-shot (无 session)
                         stream = engine.generateStreaming(
