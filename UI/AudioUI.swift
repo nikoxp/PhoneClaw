@@ -10,71 +10,63 @@ struct AudioAttachmentBubble: View {
     @StateObject private var player = AudioAttachmentPlayer()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("语音消息", systemImage: "waveform.badge.mic")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.textPrimary)
-
-                Spacer(minLength: 8)
-
-                Text(attachment.formattedDuration)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Theme.bg.opacity(0.35), in: Capsule())
-            }
-
-            HStack(spacing: 12) {
-                AudioPlaybackActionButton(
-                    isPlaying: player.isPlaying,
-                    action: { player.togglePlayback(data: attachment.wavData) }
-                )
-
-                VStack(alignment: .leading, spacing: 6) {
-                    AudioWaveformView(
-                        levels: attachment.waveform,
-                        progress: player.progress,
-                        isPlaying: player.isPlaying,
-                        activeColor: Theme.accent,
-                        inactiveColor: Theme.textTertiary.opacity(0.45),
-                        barWidth: 4,
-                        minHeight: 8,
-                        maxExtraHeight: 18
+        HStack(spacing: 10) {
+            // 播放按钮 (紧凑)
+            Button(action: { player.togglePlayback(data: attachment.wavData) }) {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Theme.bg)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        LinearGradient(
+                            colors: [Theme.accent, Theme.accent.opacity(0.82)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: Circle()
                     )
-                    .frame(height: 30)
-
-                    HStack(spacing: 8) {
-                        Text(player.isPlaying ? "播放中" : "点击播放")
-                            .font(.system(size: 11))
-                            .foregroundStyle(player.isPlaying ? Theme.accent : Theme.textSecondary)
-
-                        Spacer(minLength: 8)
-
-                        Text(player.secondaryStatusText(totalDuration: attachment.duration))
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                }
             }
+            .buttonStyle(.plain)
+
+            // 波形
+            AudioWaveformView(
+                levels: attachment.waveform,
+                progress: player.progress,
+                isPlaying: player.isPlaying,
+                activeColor: Theme.accent,
+                inactiveColor: Theme.textTertiary.opacity(0.45),
+                barWidth: 3,
+                minHeight: 6,
+                maxExtraHeight: 14
+            )
+            .frame(height: 24)
+
+            // 时长
+            Text(player.isPlaying
+                 ? player.secondaryStatusText(totalDuration: attachment.duration)
+                 : attachment.formattedDuration)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Theme.bg.opacity(0.35), in: Capsule())
         }
-        .frame(minWidth: 230, maxWidth: 272, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .frame(minWidth: 200, maxWidth: 260, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             LinearGradient(
                 colors: [Theme.bgElevated, Theme.bgHover.opacity(0.94)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Theme.borderSubtle, lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.12), radius: 10, y: 4)
+        .shadow(color: Color.black.opacity(0.1), radius: 8, y: 3)
     }
 }
 
@@ -352,67 +344,68 @@ struct ComposerAudioDraftCard: View {
     @StateObject private var player = AudioAttachmentPlayer()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Label("语音草稿", systemImage: "paperplane.circle.fill")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.textPrimary)
-
-                Spacer(minLength: 8)
-
-                audioMetaChip(text: attachment.formattedDuration, emphasized: true)
-
-                Button(action: onDiscard) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 30, height: 30)
-                        .background(Theme.bg.opacity(0.4), in: Circle())
-                }
-                .buttonStyle(.plain)
-            }
-
-            HStack(spacing: 12) {
-                AudioPlaybackActionButton(
-                    isPlaying: player.isPlaying,
-                    action: { player.togglePlayback(data: attachment.wavData) }
-                )
-
-                VStack(alignment: .leading, spacing: 8) {
-                    AudioWaveformView(
-                        levels: attachment.waveform,
-                        progress: player.progress,
-                        isPlaying: player.isPlaying,
-                        activeColor: Theme.accent,
-                        inactiveColor: Theme.textTertiary.opacity(0.45),
-                        barWidth: 4,
-                        minHeight: 8,
-                        maxExtraHeight: 18
+        HStack(spacing: 10) {
+            // 播放/试听按钮
+            Button(action: { player.togglePlayback(data: attachment.wavData) }) {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Theme.bg)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        LinearGradient(
+                            colors: [Theme.accent, Theme.accent.opacity(0.82)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: Circle()
                     )
-                    .frame(height: 30)
-
-                    HStack(spacing: 8) {
-                        Text(player.isPlaying ? "预览播放中" : "可直接发送，也可以先试听")
-                            .font(.system(size: 11))
-                            .foregroundStyle(player.isPlaying ? Theme.accent : Theme.textSecondary)
-
-                        Spacer(minLength: 8)
-                    }
-                }
             }
+            .buttonStyle(.plain)
+
+            // 波形
+            AudioWaveformView(
+                levels: attachment.waveform,
+                progress: player.progress,
+                isPlaying: player.isPlaying,
+                activeColor: Theme.accent,
+                inactiveColor: Theme.textTertiary.opacity(0.45),
+                barWidth: 3,
+                minHeight: 6,
+                maxExtraHeight: 14
+            )
+            .frame(height: 24)
+            .frame(maxWidth: .infinity)
+
+            // 时长
+            Text(attachment.formattedDuration)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.textPrimary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Theme.bg.opacity(0.35), in: Capsule())
+
+            // 取消按钮
+            Button(action: onDiscard) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 26, height: 26)
+                    .background(Theme.bg.opacity(0.4), in: Circle())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             LinearGradient(
                 colors: [Theme.accentSubtle, Theme.bgElevated],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
-            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Theme.accent.opacity(0.2), lineWidth: 1)
         )
     }
