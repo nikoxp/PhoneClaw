@@ -256,8 +256,6 @@ struct AudioPlaybackActionButton: View {
     }
 }
 
-// MARK: - Recording Status Card
-
 struct RecordingStatusCard: View {
     let duration: TimeInterval
     let peakLevel: Float
@@ -265,66 +263,64 @@ struct RecordingStatusCard: View {
     let onDiscard: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            // 停止按钮 (紧凑)
+            Button(action: onStop) {
+                ZStack {
                     Circle()
-                        .fill(Color.red.opacity(0.92))
-                        .frame(width: 8, height: 8)
-                    Text("录音中")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Theme.textPrimary)
+                        .fill(Color.red.opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Circle()
+                        .strokeBorder(Color.red.opacity(0.4), lineWidth: 2)
+                        .frame(width: 36, height: 36)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Color.red.opacity(0.9))
+                        .frame(width: 14, height: 14)
                 }
-
-                Spacer(minLength: 8)
-
-                audioMetaChip(text: formattedDuration, emphasized: true)
             }
+            .buttonStyle(.plain)
 
-            HStack(spacing: 12) {
-                AudioPlaybackActionButton(
-                    isPlaying: false,
-                    symbolName: "stop.fill",
-                    action: onStop
-                )
-                    .overlay(
-                        Circle()
-                            .strokeBorder(Color.red.opacity(0.25), lineWidth: 8)
-                            .scaleEffect(1.08)
-                    )
+            // 波形
+            RecordingLevelBars(level: peakLevel)
+                .frame(height: 24)
+                .frame(maxWidth: .infinity)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    RecordingLevelBars(level: peakLevel)
-                        .frame(height: 28)
+            // 时长
+            Text(formattedDuration)
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.textPrimary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Theme.bg.opacity(0.35), in: Capsule())
 
-                    Text("点左侧按钮结束录音，发送时会作为音频附件一并发出。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(2)
-                }
+            // 闪烁红点
+            Circle()
+                .fill(Color.red.opacity(0.85))
+                .frame(width: 7, height: 7)
+                .modifier(PulsingDot())
 
-                Button(action: onDiscard) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 30, height: 30)
-                        .background(Theme.bg.opacity(0.42), in: Circle())
-                }
-                .buttonStyle(.plain)
+            // 取消按钮
+            Button(action: onDiscard) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 26, height: 26)
+                    .background(Theme.bg.opacity(0.4), in: Circle())
             }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             LinearGradient(
                 colors: [Theme.bgElevated, Theme.bgHover.opacity(0.98)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
-            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Theme.border, lineWidth: 1)
         )
     }
@@ -333,7 +329,18 @@ struct RecordingStatusCard: View {
         let totalSeconds = max(Int(duration.rounded()), 0)
         return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
+}
 
+/// 红点闪烁动画
+private struct PulsingDot: ViewModifier {
+    @State private var pulsing = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(pulsing ? 0.3 : 1)
+            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulsing)
+            .onAppear { pulsing = true }
+    }
 }
 
 // MARK: - Composer Audio Draft Card
