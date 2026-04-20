@@ -18,11 +18,14 @@ public struct AudioInput: Sendable {
     public let samples: [Float]
     public let sampleRate: Double
     public let channelCount: Int
+    /// 录音文件原始字节 (WAV) — 可直接传给引擎，跳过手动 WAV 编码
+    public let rawFileData: Data?
 
-    public init(samples: [Float], sampleRate: Double, channelCount: Int = 1) {
+    public init(samples: [Float], sampleRate: Double, channelCount: Int = 1, rawFileData: Data? = nil) {
         self.samples = samples
         self.sampleRate = sampleRate
         self.channelCount = channelCount
+        self.rawFileData = rawFileData
     }
 
     /// 编码为 16-bit PCM WAV Data (适配 LiteRT-LM 音频输入)
@@ -82,7 +85,8 @@ public struct AudioInput: Sendable {
         AudioInput(
             samples: snapshot.pcm,
             sampleRate: snapshot.sampleRate,
-            channelCount: snapshot.channelCount
+            channelCount: snapshot.channelCount,
+            rawFileData: snapshot.rawFileData
         )
     }
 }

@@ -109,16 +109,23 @@ struct ChatAudioAttachment: Identifiable, Codable {
     }
 
     init?(snapshot: AudioCaptureSnapshot) {
-        guard !snapshot.pcm.isEmpty, snapshot.sampleRate > 0 else { return nil }
+        guard snapshot.sampleRate > 0,
+              (!snapshot.pcm.isEmpty || snapshot.rawFileData != nil) else { return nil }
         self.id = UUID()
-        self.wavData = Self.makeWAVData(
-            pcm: snapshot.pcm,
-            sampleRate: snapshot.sampleRate,
-            channelCount: 1
-        )
+        if let rawData = snapshot.rawFileData {
+            // rawFileData 模式：录音文件的原始 WAV 字节
+            self.wavData = rawData
+            self.waveform = Array(repeating: Float(0.5), count: 36)  // 占位波形
+        } else {
+            self.wavData = Self.makeWAVData(
+                pcm: snapshot.pcm,
+                sampleRate: snapshot.sampleRate,
+                channelCount: 1
+            )
+            self.waveform = Self.makeWaveform(from: snapshot.pcm)
+        }
         self.duration = snapshot.duration
         self.sampleRate = snapshot.sampleRate
-        self.waveform = Self.makeWaveform(from: snapshot.pcm)
     }
 
     var formattedDuration: String {

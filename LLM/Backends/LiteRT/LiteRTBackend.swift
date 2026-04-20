@@ -412,22 +412,25 @@ final class LiteRTBackend: InferenceService {
                         }
                     }
 
-                    // AudioInput → WAV Data
-                    let audiosData = audios.map { $0.wavData }
+                    // AudioInput → WAV Data (优先用原始文件字节，否则手动编码)
+                    let audiosData = audios.map { audio -> Data in
+                        if let raw = audio.rawFileData {
+                            return raw
+                        }
+                        return audio.wavData
+                    }
 
                     let fullPrompt = systemPrompt.isEmpty
                         ? prompt
                         : systemPrompt + "\n" + prompt
 
                     #if DEBUG
-                    // 诊断: 音频链路 — 证实传给引擎的 payload 是真实非空
                     for (i, audio) in audios.enumerated() {
-                        let durationSec = Double(audio.samples.count) / max(audio.sampleRate, 1)
-                        let n = Float(max(audio.samples.count, 1))
-                        let rms = (audio.samples.reduce(Float(0)) { $0 + $1 * $1 } / n).squareRoot()
-                        let peak = audio.samples.map { abs($0) }.max() ?? 0
-                        let silent = peak < 0.01  // <0.01 归一化 ≈ 近乎静默
-                        print("[LiteRT] audio[\(i)] samples=\(audio.samples.count) sr=\(Int(audio.sampleRate)) dur=\(String(format: "%.2f", durationSec))s wavBytes=\(audiosData[i].count) rms=\(String(format: "%.4f", rms)) peak=\(String(format: "%.4f", peak))\(silent ? " ⚠️SILENT" : "")")
+                        let isRaw = audio.rawFileData != nil
+                        let durationSec = audio.rawFileData != nil
+                            ? Double(audiosData[i].count) / (16000 * 2 + 44) * (Double(audiosData[i].count - 44) / (16000 * 2))
+                            : Double(audio.samples.count) / max(audio.sampleRate, 1)
+                        print("[LiteRT] audio[\(i)] source=\(isRaw ? "rawFile" : "pcmEncode") wavBytes=\(audiosData[i].count) dur=\(String(format: "%.2f", audio.sampleRate > 0 ? Double(max(audio.samples.count, audiosData[i].count / 2)) / audio.sampleRate : 0))s")
                     }
                     print("[LiteRT] images=\(imagesData.count) audios=\(audios.count) promptChars=\(fullPrompt.count) prompt=\"\(fullPrompt.prefix(120))\"")
                     #endif

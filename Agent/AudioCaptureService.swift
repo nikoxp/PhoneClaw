@@ -7,6 +7,16 @@ struct AudioCaptureSnapshot: Sendable {
     let sampleRate: Double
     let channelCount: Int
     let duration: TimeInterval
+    /// 原始录音文件字节 (WAV/M4A) — 可直接传给引擎，绕过手动 WAV 编码
+    let rawFileData: Data?
+
+    init(pcm: [Float], sampleRate: Double, channelCount: Int, duration: TimeInterval, rawFileData: Data? = nil) {
+        self.pcm = pcm
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.duration = duration
+        self.rawFileData = rawFileData
+    }
 }
 
 @MainActor
@@ -97,12 +107,14 @@ final class AudioCaptureService: NSObject, @preconcurrency AVAudioRecorderDelega
             )
             try audioSession.setActive(true)
 
-            // 录制为 AAC (M4A) — iOS 原生支持，高质量
+            // 录制为 16kHz mono 16-bit PCM WAV — 引擎直接可读
             let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 44100,
+                AVFormatIDKey: Int(kAudioFormatLinearPCM),
+                AVSampleRateKey: 16000,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
             ]
 
             let rec = try AVAudioRecorder(url: url, settings: settings)
@@ -142,20 +154,32 @@ final class AudioCaptureService: NSObject, @preconcurrency AVAudioRecorderDelega
         isCapturing = false
         peakLevel = 0
 
-        // 用与文件导入完全相同的路径解码录音文件
+        // 直接读录音文件原始字节 — 不解码、不重采样、不手动 WAV header
         if let url = recordingURL {
             do {
-                let snapshot = try Self.decodeAudioFile(url: url)
-                decodedSnapshot = snapshot
+                let fileData = try Data(contentsOf: url)
+                // 从文件中提取时长信息
+                let audioFile = try AVAudioFile(forReading: url)
+                let fileDuration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
+                let fileSR = audioFile.fileFormat.sampleRate
+                let sampleCount = Int(audioFile.length)
+
+                decodedSnapshot = AudioCaptureSnapshot(
+                    pcm: [],  // 不需要 PCM，引擎直接用 rawFileData
+                    sampleRate: fileSR,
+                    channelCount: 1,
+                    duration: fileDuration,
+                    rawFileData: fileData
+                )
                 statusText = String(
                     format: "已录制 %.1f 秒音频，可以直接发送给模型。",
-                    snapshot.duration
+                    fileDuration
                 )
-                print("[AudioCapture] Recording decoded: \(Int(snapshot.pcm.count)) samples @ \(Int(snapshot.sampleRate))Hz, \(String(format: "%.1f", snapshot.duration))s")
+                print("[AudioCapture] Recording ready: \(fileData.count) bytes, \(sampleCount) samples @ \(Int(fileSR))Hz, \(String(format: "%.1f", fileDuration))s")
             } catch {
-                lastErrorMessage = "录音解码失败: \(error.localizedDescription)"
+                lastErrorMessage = "读取录音文件失败: \(error.localizedDescription)"
                 statusText = lastErrorMessage ?? ""
-                print("[AudioCapture] Failed to decode recording: \(error)")
+                print("[AudioCapture] Failed to read recording: \(error)")
             }
             // 清理临时文件
             try? FileManager.default.removeItem(at: url)
