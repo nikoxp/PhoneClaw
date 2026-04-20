@@ -154,23 +154,8 @@ struct LiveModeView: View {
         }
         .preferredColorScheme(.dark)
         .task {
-            // E4B 在 Live 模式下物理超 jetsam (真机 2026-04-16 验证):
-            //   E4B 权重 4 GB + Live runtime (TTS Keqing/AudioIO/VAD/Orb) ~800 MB
-            //   + KV cache prefill 临时 buffer ~500 MB ≈ 5.3 GB baseline,
-            //   推理任意 spike 都突破 jetsam 6144. 不论是否开摄像头.
-            //
-            // 强制切 E2B (~2.5 GB), Live runtime + 推理总 < 4.5 GB, 安全.
-            // 退出 Live (LiveModeView 销毁) 后, 用户原选模型保留在 ChatUI 不丢.
-            // 注意: 这是单向切换 — 我们不在 onDisappear 回切, 因为 Live 退出
-            // 后用户回到 ChatUI 自己选, InferenceService 还是 E2B 没问题.
-            // 如果用户想用 E4B 文本, 在 Configurations 里手动切回去即可.
-            // E4B 在 Live 模式下物理超 jetsam, 强制切 E2B.
-            if catalog.loadedModel?.id.contains("e4b") == true {
-                print("[Live] ⚠️ E4B 在 Live 模式内存超限, 自动切到 E2B")
-                _ = catalog.select(modelID: "gemma-4-e2b-it-litert")
-                inference.unload()
-                try? await inference.load(modelID: "gemma-4-e2b-it-litert")
-            }
+            // 注: 之前 E4B 在 Live 有 jetsam 风险, 已在 iPhone 17 Pro Max 验证
+            // headroom 充足 (~2.7 GB), 不再强制切 E2B.
             liveEngine.setup(inference: inference)
             liveEngine.userSystemPrompt = userSystemPrompt
             await liveEngine.start()
