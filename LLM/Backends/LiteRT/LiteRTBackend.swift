@@ -438,26 +438,30 @@ final class LiteRTBackend: InferenceService {
                     // - image (或 image+audio) → engine.multimodalStreaming
 
                     if imagesData.isEmpty, !audiosData.isEmpty {
-                        // Audio-only: 用 Conversation API
-                        print("[LiteRT] Using Conversation API for audio")
-                        try await engine.openConversation(
+                        // Audio-only
+                        let wavData = audiosData[0]
+
+                        // DEBUG: dump WAV to Documents for inspection
+                        #if DEBUG
+                        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                        let debugWav = docs.appendingPathComponent("debug_audio.wav")
+                        try? wavData.write(to: debugWav)
+                        print("[LiteRT] 🔊 WAV dumped to \(debugWav.path) (\(wavData.count) bytes)")
+                        #endif
+
+                        // 用 non-streaming audio API (带 format: .wav 参数)
+                        print("[LiteRT] Using engine.audio() with format: .wav")
+                        let text = try await engine.audio(
+                            audioData: wavData,
+                            prompt: fullPrompt,
+                            format: .wav,
                             temperature: self.samplingTemperature,
                             maxTokens: Int(self.maxOutputTokens)
                         )
-                        let stream = engine.conversationSendStreaming(
-                            audioData: audiosData,
-                            imagesData: [],
-                            prompt: fullPrompt
-                        )
-                        for try await chunk in stream {
-                            if self.cancelled {
-                                continuation.finish()
-                                break
-                            }
-                            continuation.yield(chunk)
-                        }
-                        engine.closeConversation()
                         if !self.cancelled {
+                            if !text.isEmpty {
+                                continuation.yield(text)
+                            }
                             continuation.finish()
                         }
                     } else {
