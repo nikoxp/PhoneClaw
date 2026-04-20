@@ -34,7 +34,7 @@ final class LiteRTBackend: InferenceService {
     var samplingTopK: Int = 40
     var samplingTopP: Float = 0.95
     var samplingTemperature: Float = 1.0
-    var maxOutputTokens: Int = 4000
+    var maxOutputTokens: Int = 8192
 
     // MARK: - Internal
 
