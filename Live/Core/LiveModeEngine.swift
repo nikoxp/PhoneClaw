@@ -437,11 +437,12 @@ class LiveModeEngine {
         if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             spoken = liveStrings.listeningPrompt + "。"
         } else {
-            // 去掉 marker (✓/○/◐) 前缀
+            // 去掉 marker (✓/○/◐) 前缀 — 兼容有无空格: "✓ 哈喽" 和 "✓哈喽"
             var text = cleaned
-            for prefix in ["✓ ", "○ ", "◐ "] {
-                if text.hasPrefix(prefix) {
-                    text = String(text.dropFirst(prefix.count))
+            for marker in ["✓", "○", "◐"] {
+                if text.hasPrefix(marker) {
+                    text = String(text.dropFirst(marker.count))
+                    if text.hasPrefix(" ") { text = String(text.dropFirst()) }
                     break
                 }
             }
