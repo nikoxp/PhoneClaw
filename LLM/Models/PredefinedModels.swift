@@ -15,7 +15,14 @@ public extension ModelDescriptor {
         displayName: "Gemma 4 E2B",
         family: .gemma4,
         artifactKind: .litertlmFile,
-        downloadURL: URL(string: "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm")!,
+        downloadURLs: [
+            // 1. ModelScope (国内优先)
+            URL(string: "https://modelscope.cn/models/litert-community/gemma-4-E2B-it-litert-lm/resolve/master/gemma-4-E2B-it.litertlm")!,
+            // 2. HuggingFace Mirror (hf-mirror.com)
+            URL(string: "https://hf-mirror.com/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm")!,
+            // 3. HuggingFace (原站)
+            URL(string: "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm")!,
+        ],
         fileName: "gemma-4-E2B-it.litertlm",
         expectedFileSize: 2_600_000_000,
         capabilities: ModelCapabilities(
@@ -36,7 +43,14 @@ public extension ModelDescriptor {
         displayName: "Gemma 4 E4B",
         family: .gemma4,
         artifactKind: .litertlmFile,
-        downloadURL: URL(string: "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm")!,
+        downloadURLs: [
+            // 1. ModelScope (国内优先)
+            URL(string: "https://modelscope.cn/models/litert-community/gemma-4-E4B-it-litert-lm/resolve/master/gemma-4-E4B-it.litertlm")!,
+            // 2. HuggingFace Mirror (hf-mirror.com)
+            URL(string: "https://hf-mirror.com/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm")!,
+            // 3. HuggingFace (原站)
+            URL(string: "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm")!,
+        ],
         fileName: "gemma-4-E4B-it.litertlm",
         expectedFileSize: 3_700_000_000,
         capabilities: ModelCapabilities(

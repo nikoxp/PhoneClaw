@@ -150,8 +150,8 @@ public struct ModelDescriptor: Identifiable, Hashable, Sendable {
     public let displayName: String
     public let family: ModelFamily
     public let artifactKind: ArtifactKind
-    /// HuggingFace direct download URL
-    public let downloadURL: URL
+    /// 按优先级排列的下载镜像 (ModelScope > HF Mirror > HF)
+    public let downloadURLs: [URL]
     /// 本地文件名 (单文件) 或目录名 (多文件)
     public let fileName: String
     /// 预期文件大小 (bytes)，用于下载进度
@@ -161,6 +161,9 @@ public struct ModelDescriptor: Identifiable, Hashable, Sendable {
     /// 运行时 profile (内存预算、输出上限)
     /// 复用已有的 ModelRuntimeProfile 类型 (backend-neutral)
     public let runtimeProfile: ModelRuntimeProfile
+
+    /// 兼容旧代码: 返回第一个 URL
+    public var downloadURL: URL { downloadURLs[0] }
 
     public static func == (lhs: ModelDescriptor, rhs: ModelDescriptor) -> Bool {
         lhs.id == rhs.id

@@ -4,6 +4,7 @@ import Foundation
 //
 // ModelInstaller conformer for .litertlm 单文件模型。
 // 下载使用 URLSession，存储到 Documents/models/<fileName>。
+// 支持多镜像源自动 fallback + 实时速度计算。
 
 @Observable
 final class LiteRTModelStore: ModelInstaller {
@@ -62,60 +63,19 @@ final class LiteRTModelStore: ModelInstaller {
                     // 清理旧的部分下载
                     try? FileManager.default.removeItem(at: tempURL)
 
-                    // 下载
-                    let (asyncBytes, response) = try await URLSession.shared.bytes(from: model.downloadURL)
-
-                    // HTTP 状态校验 — 防止 404/403 错误页被当作模型文件保存
-                    if let httpResponse = response as? HTTPURLResponse,
-                       !(200..<300).contains(httpResponse.statusCode) {
-                        throw LiteRTDownloadError.httpStatus(httpResponse.statusCode)
-                    }
-
-                    let totalSize = (response as? HTTPURLResponse)
-                        .flatMap { $0.expectedContentLength > 0 ? $0.expectedContentLength : nil }
-                        ?? model.expectedFileSize
-
-                    let fileHandle = try FileHandle(forWritingTo: {
-                        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
-                        return tempURL
-                    }())
-                    defer { try? fileHandle.close() }
-
-                    var bytesReceived: Int64 = 0
-                    var buffer = Data()
-                    let flushInterval: Int64 = 1024 * 1024 // 1 MB
-
-                    for try await byte in asyncBytes {
-                        buffer.append(byte)
-                        bytesReceived += 1
-
-                        if Int64(buffer.count) >= flushInterval {
-                            fileHandle.write(buffer)
-                            buffer.removeAll(keepingCapacity: true)
-
-                            await MainActor.run {
-                                self.downloadProgress[modelID] = DownloadProgress(
-                                    bytesReceived: bytesReceived,
-                                    totalBytes: totalSize,
-                                    currentFile: model.fileName
-                                )
-                            }
-                        }
-
-                        if Task.isCancelled { throw CancellationError() }
-                    }
-
-                    // 写入剩余
-                    if !buffer.isEmpty {
-                        fileHandle.write(buffer)
-                    }
-                    try fileHandle.close()
+                    // 多镜像源 fallback 下载
+                    try await self.downloadWithFallback(
+                        urls: model.downloadURLs,
+                        tempURL: tempURL,
+                        modelID: modelID,
+                        expectedFileSize: model.expectedFileSize,
+                        fileName: model.fileName
+                    )
 
                     // 文件大小校验 — 捕获截断下载
                     let fileAttrs = try FileManager.default.attributesOfItem(atPath: tempURL.path)
                     let actualSize = (fileAttrs[.size] as? Int64) ?? 0
                     if model.expectedFileSize > 0, actualSize < model.expectedFileSize / 2 {
-                        // 实际大小不到预期的一半 — 明显不完整
                         try? FileManager.default.removeItem(at: tempURL)
                         throw LiteRTDownloadError.invalidResponse
                     }
@@ -149,6 +109,133 @@ final class LiteRTModelStore: ModelInstaller {
 
             activeTasks[modelID] = task
         }
+    }
+
+    // MARK: - Multi-source Fallback Download
+
+    /// 依次尝试多个镜像源, 第一个成功即停止. 每个源 HTTP 错误或超时则自动 fallback.
+    private func downloadWithFallback(
+        urls: [URL],
+        tempURL: URL,
+        modelID: String,
+        expectedFileSize: Int64,
+        fileName: String
+    ) async throws {
+        var lastError: Error?
+
+        for (index, url) in urls.enumerated() {
+            let sourceName = mirrorName(for: url)
+            print("[Download] 尝试镜像 \(index + 1)/\(urls.count): \(sourceName)")
+
+            do {
+                try await downloadFromURL(
+                    url: url,
+                    tempURL: tempURL,
+                    modelID: modelID,
+                    expectedFileSize: expectedFileSize,
+                    fileName: fileName,
+                    sourceName: sourceName
+                )
+                print("[Download] ✅ 从 \(sourceName) 下载成功")
+                return // 成功
+            } catch is CancellationError {
+                throw CancellationError() // 用户取消, 不 fallback
+            } catch {
+                lastError = error
+                print("[Download] ❌ \(sourceName) 失败: \(error.localizedDescription)")
+                // 清理失败的部分文件
+                try? FileManager.default.removeItem(at: tempURL)
+                continue // 尝试下一个
+            }
+        }
+
+        throw lastError ?? LiteRTDownloadError.invalidResponse
+    }
+
+    /// 从单个 URL 下载, 带实时速度计算
+    private func downloadFromURL(
+        url: URL,
+        tempURL: URL,
+        modelID: String,
+        expectedFileSize: Int64,
+        fileName: String,
+        sourceName: String
+    ) async throws {
+        let (asyncBytes, response) = try await URLSession.shared.bytes(from: url)
+
+        // HTTP 状态校验
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            throw LiteRTDownloadError.httpStatus(httpResponse.statusCode)
+        }
+
+        let totalSize = (response as? HTTPURLResponse)
+            .flatMap { $0.expectedContentLength > 0 ? $0.expectedContentLength : nil }
+            ?? expectedFileSize
+
+        let fileHandle = try FileHandle(forWritingTo: {
+            FileManager.default.createFile(atPath: tempURL.path, contents: nil)
+            return tempURL
+        }())
+        defer { try? fileHandle.close() }
+
+        var bytesReceived: Int64 = 0
+        var buffer = Data()
+        let flushInterval: Int64 = 1024 * 1024 // 1 MB
+
+        // 速度计算
+        let downloadStart = CFAbsoluteTimeGetCurrent()
+        var lastSpeedUpdate = downloadStart
+        var lastSpeedBytes: Int64 = 0
+        var smoothedSpeed: Double = 0
+
+        for try await byte in asyncBytes {
+            buffer.append(byte)
+            bytesReceived += 1
+
+            if Int64(buffer.count) >= flushInterval {
+                fileHandle.write(buffer)
+                buffer.removeAll(keepingCapacity: true)
+
+                // 计算实时速度 (滑动平均)
+                let now = CFAbsoluteTimeGetCurrent()
+                let elapsed = now - lastSpeedUpdate
+                if elapsed > 0.5 {
+                    let instantSpeed = Double(bytesReceived - lastSpeedBytes) / elapsed
+                    smoothedSpeed = smoothedSpeed > 0
+                        ? smoothedSpeed * 0.7 + instantSpeed * 0.3  // EMA 平滑
+                        : instantSpeed
+                    lastSpeedUpdate = now
+                    lastSpeedBytes = bytesReceived
+                }
+
+                await MainActor.run {
+                    self.downloadProgress[modelID] = DownloadProgress(
+                        bytesReceived: bytesReceived,
+                        totalBytes: totalSize,
+                        bytesPerSecond: smoothedSpeed > 0 ? smoothedSpeed : nil,
+                        currentFile: "\(fileName) (\(sourceName))"
+                    )
+                }
+            }
+
+            if Task.isCancelled { throw CancellationError() }
+        }
+
+        // 写入剩余
+        if !buffer.isEmpty {
+            fileHandle.write(buffer)
+        }
+        try fileHandle.close()
+    }
+
+    /// 根据 URL host 返回镜像名称
+    private func mirrorName(for url: URL) -> String {
+        guard let host = url.host else { return "Unknown" }
+        if host.contains("modelscope") { return "ModelScope" }
+        if host.contains("hf-mirror") { return "HF Mirror" }
+        if host.contains("huggingface") { return "HuggingFace" }
+        return host
     }
 
     func remove(model: ModelDescriptor) throws {

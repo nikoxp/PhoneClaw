@@ -678,10 +678,16 @@ struct ConfigurationsView: View {
 
     private func downloadMetricsText(_ metrics: DownloadProgress) -> String {
         let speedText = formattedSpeed(metrics.bytesPerSecond)
+        var result: String
         if let totalBytes = metrics.totalBytes, totalBytes > 0 {
-            return "\(formattedBytes(metrics.bytesReceived)) / \(formattedBytes(totalBytes)) · \(speedText)"
+            result = "\(formattedBytes(metrics.bytesReceived)) / \(formattedBytes(totalBytes))"
+        } else {
+            result = formattedBytes(metrics.bytesReceived)
         }
-        return "\(formattedBytes(metrics.bytesReceived)) · \(speedText)"
+        if !speedText.isEmpty {
+            result += " · \(speedText)"
+        }
+        return result
     }
 
     private func formattedBytes(_ bytes: Int64) -> String {
@@ -695,9 +701,9 @@ struct ConfigurationsView: View {
 
     private func formattedSpeed(_ bytesPerSecond: Double?) -> String {
         guard let bytesPerSecond, bytesPerSecond > 0 else {
-            return localized("计算中…", "Calculating…")
+            return ""
         }
-        return localized("速度 ", "Speed ") + formattedBytes(Int64(bytesPerSecond)) + "/s"
+        return formattedBytes(Int64(bytesPerSecond)) + "/s"
     }
 
     private func modelStateDetail(_ state: ModelInstallState) -> String? {
