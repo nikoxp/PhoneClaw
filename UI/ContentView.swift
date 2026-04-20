@@ -48,6 +48,7 @@ struct ContentView: View {
     @State private var captureOrigin: CaptureOrigin = .menu
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
+    @State private var importedAudioSnapshot: AudioCaptureSnapshot?
     @State private var holdToTalkASR = ASRService()
 
     private var displayItems: [DisplayItem] {
@@ -687,10 +688,12 @@ struct ContentView: View {
         if audioCapture.isCapturing {
             _ = audioCapture.stopCapture()
         }
-        let audioSnapshot = audioCapture.consumeLatestSnapshot()
+        // 优先用导入的音频文件, 其次用麦克风录音
+        let audioSnapshot = importedAudioSnapshot ?? audioCapture.consumeLatestSnapshot()
         inputText = ""
         selectedImages = []
         selectedPhotoItem = nil
+        importedAudioSnapshot = nil
         isInputFocused = false
         await engine.processInput(text, images: images, audio: audioSnapshot)
     }
@@ -737,11 +740,15 @@ struct ContentView: View {
             // 音频文件 → 读取为 PCM 并走音频附件路径
             if ["wav", "mp3", "m4a", "aac", "caf", "flac", "ogg"].contains(ext) {
                 do {
-                    let data = try Data(contentsOf: url)
-                    inputText += (inputText.isEmpty ? "" : "\n") + "[附件: \(filename), \(data.count / 1024)KB 音频文件]"
-                    print("[UI] Audio file imported: \(filename) (\(data.count) bytes)")
+                    let snapshot = try Self.decodeAudioFile(url: url)
+                    importedAudioSnapshot = snapshot
+                    if inputText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        inputText = "这段音频说了什么"
+                    }
+                    print("[UI] Audio file decoded: \(filename) → \(snapshot.pcm.count) samples @ \(Int(snapshot.sampleRate))Hz, \(String(format: "%.1f", snapshot.duration))s")
                 } catch {
-                    print("[UI] Failed to read audio file: \(error)")
+                    inputText += (inputText.isEmpty ? "" : "\n") + "[附件: \(filename) — 音频解码失败]"
+                    print("[UI] Failed to decode audio file: \(error)")
                 }
             }
             // PDF → 提取文字内容
@@ -795,6 +802,72 @@ struct ContentView: View {
         case .failure(let error):
             print("[UI] File import failed: \(error)")
         }
+    }
+
+    // MARK: - Audio File Decoder
+
+    /// 解码任意音频文件 (MP3/WAV/M4A/AAC/…) 为 16kHz mono PCM Float
+    private static func decodeAudioFile(url: URL) throws -> AudioCaptureSnapshot {
+        let file = try AVAudioFile(forReading: url)
+        let srcFormat = file.processingFormat
+        let frameCount = AVAudioFrameCount(file.length)
+
+        // 目标: 16kHz mono Float32
+        let targetSR: Double = 16_000
+        guard let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetSR,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw NSError(domain: "AudioDecode", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot create target format"])
+        }
+
+        // 读原始 PCM
+        guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: frameCount) else {
+            throw NSError(domain: "AudioDecode", code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot create source buffer"])
+        }
+        try file.read(into: srcBuffer)
+
+        // 转换到 16kHz mono
+        guard let converter = AVAudioConverter(from: srcFormat, to: targetFormat) else {
+            throw NSError(domain: "AudioDecode", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot create converter"])
+        }
+        let ratio = targetSR / srcFormat.sampleRate
+        let outputFrameCount = AVAudioFrameCount(Double(frameCount) * ratio)
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputFrameCount) else {
+            throw NSError(domain: "AudioDecode", code: -4,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot create output buffer"])
+        }
+
+        var error: NSError?
+        let status = converter.convert(to: outBuffer, error: &error) { _, outStatus in
+            outStatus.pointee = .haveData
+            return srcBuffer
+        }
+        if let error { throw error }
+        guard status != .error else {
+            throw NSError(domain: "AudioDecode", code: -5,
+                          userInfo: [NSLocalizedDescriptionKey: "Conversion failed"])
+        }
+
+        // 提取 Float samples
+        guard let channelData = outBuffer.floatChannelData else {
+            throw NSError(domain: "AudioDecode", code: -6,
+                          userInfo: [NSLocalizedDescriptionKey: "No channel data"])
+        }
+        let count = Int(outBuffer.frameLength)
+        let samples = Array(UnsafeBufferPointer(start: channelData[0], count: count))
+
+        return AudioCaptureSnapshot(
+            pcm: samples,
+            sampleRate: targetSR,
+            channelCount: 1,
+            duration: Double(count) / targetSR
+        )
     }
 }
 
