@@ -432,14 +432,33 @@ final class LiteRTBackend: InferenceService {
                     print("[LiteRT] images=\(imagesData.count) audios=\(audios.count) promptChars=\(fullPrompt.count) prompt=\"\(fullPrompt.prefix(120))\"")
                     #endif
 
-                    // Stream via Conversation API
-                    for try await chunk in engine.multimodalStreaming(
-                        audioData: audiosData,
-                        imagesData: imagesData,
-                        prompt: fullPrompt,
-                        temperature: self.samplingTemperature,
-                        maxTokens: self.maxOutputTokens
-                    ) {
+                    // 根据媒体类型选择正确的 API:
+                    // - audio-only → engine.audioStreaming (专用 API, 需要 format 参数)
+                    // - image (或 image+audio) → engine.multimodalStreaming
+                    let stream: AsyncThrowingStream<String, Error>
+
+                    if imagesData.isEmpty, audiosData.count == 1 {
+                        // Audio-only: 用专用 audio API (已验证可工作)
+                        print("[LiteRT] Using dedicated audioStreaming API")
+                        stream = engine.audioStreaming(
+                            audioData: audiosData[0],
+                            prompt: fullPrompt,
+                            format: .wav,
+                            temperature: self.samplingTemperature,
+                            maxTokens: self.maxOutputTokens
+                        )
+                    } else {
+                        // Image / mixed: 用通用 multimodal API
+                        stream = engine.multimodalStreaming(
+                            audioData: audiosData,
+                            imagesData: imagesData,
+                            prompt: fullPrompt,
+                            temperature: self.samplingTemperature,
+                            maxTokens: self.maxOutputTokens
+                        )
+                    }
+
+                    for try await chunk in stream {
                         if self.cancelled {
                             continuation.finish()
                             break
