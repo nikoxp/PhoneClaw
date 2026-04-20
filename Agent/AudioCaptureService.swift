@@ -107,14 +107,12 @@ final class AudioCaptureService: NSObject, @preconcurrency AVAudioRecorderDelega
             )
             try audioSession.setActive(true)
 
-            // 录制为 16kHz mono 16-bit PCM WAV — 引擎直接可读
+            // 录制为 M4A (44.1kHz AAC) — 高质量，与导入文件相同的解码路径
             let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatLinearPCM),
-                AVSampleRateKey: 16000,
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 44100,
                 AVNumberOfChannelsKey: 1,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsBigEndianKey: false,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
             ]
 
             let rec = try AVAudioRecorder(url: url, settings: settings)
@@ -154,28 +152,24 @@ final class AudioCaptureService: NSObject, @preconcurrency AVAudioRecorderDelega
         isCapturing = false
         peakLevel = 0
 
-        // 直接读录音文件原始字节 — 不解码、不重采样、不手动 WAV header
+        // 用 decodeAudioFile 解码 — 和文件导入完全相同的路径
         if let url = recordingURL {
             do {
-                let fileData = try Data(contentsOf: url)
-                // 从文件中提取时长信息
-                let audioFile = try AVAudioFile(forReading: url)
-                let fileDuration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
-                let fileSR = audioFile.fileFormat.sampleRate
-                let sampleCount = Int(audioFile.length)
+                let snapshot = try Self.decodeAudioFile(url: url)
+                decodedSnapshot = snapshot
 
-                decodedSnapshot = AudioCaptureSnapshot(
-                    pcm: [],  // 不需要 PCM，引擎直接用 rawFileData
-                    sampleRate: fileSR,
-                    channelCount: 1,
-                    duration: fileDuration,
-                    rawFileData: fileData
-                )
+                // debug: 保存一份 WAV 到 Documents 方便验证
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                let debugFile = docs.appendingPathComponent("debug_mic.wav")
+                let wavData = AudioInput.from(snapshot: snapshot).wavData
+                try? wavData.write(to: debugFile)
+                print("[AudioCapture] Recording decoded: \(snapshot.pcm.count) samples @ \(Int(snapshot.sampleRate))Hz, \(String(format: "%.1f", snapshot.duration))s, wavBytes=\(wavData.count)")
+                print("[AudioCapture] 🔊 Debug WAV saved: \(debugFile.path)")
+
                 statusText = String(
                     format: "已录制 %.1f 秒音频，可以直接发送给模型。",
-                    fileDuration
+                    snapshot.duration
                 )
-                print("[AudioCapture] Recording ready: \(fileData.count) bytes, \(sampleCount) samples @ \(Int(fileSR))Hz, \(String(format: "%.1f", fileDuration))s")
             } catch {
                 lastErrorMessage = "读取录音文件失败: \(error.localizedDescription)"
                 statusText = lastErrorMessage ?? ""
