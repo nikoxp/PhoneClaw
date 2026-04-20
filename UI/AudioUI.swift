@@ -144,9 +144,9 @@ final class AudioAttachmentPlayer: NSObject, ObservableObject, @preconcurrency A
     }
 
     func secondaryStatusText(totalDuration: TimeInterval) -> String {
-        guard totalDuration > 0 else { return "--:--" }
+        guard totalDuration > 0 else { return "--" }
         if isPlaying || currentTime > 0 {
-            return "\(formatTime(currentTime)) / \(formatTime(totalDuration))"
+            return "\(formatTime(currentTime))/\(formatTime(totalDuration))"
         }
         return formatTime(totalDuration)
     }
@@ -192,7 +192,10 @@ final class AudioAttachmentPlayer: NSObject, ObservableObject, @preconcurrency A
 
     private func formatTime(_ time: TimeInterval) -> String {
         let totalSeconds = max(Int(time.rounded()), 0)
-        return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+        if totalSeconds >= 60 {
+            return "\(totalSeconds / 60)′\(String(format: "%02d", totalSeconds % 60))″"
+        }
+        return "\(totalSeconds)″"
     }
 
     private func play(data: Data) {
@@ -319,7 +322,10 @@ struct RecordingStatusCard: View {
 
     private var formattedDuration: String {
         let totalSeconds = max(Int(duration.rounded()), 0)
-        return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+        if totalSeconds >= 60 {
+            return "\(totalSeconds / 60)′\(String(format: "%02d", totalSeconds % 60))″"
+        }
+        return "\(totalSeconds)″"
     }
 }
 

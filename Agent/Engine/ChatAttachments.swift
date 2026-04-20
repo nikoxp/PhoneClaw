@@ -130,9 +130,10 @@ struct ChatAudioAttachment: Identifiable, Codable {
 
     var formattedDuration: String {
         let totalSeconds = Int(duration.rounded())
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
+        if totalSeconds >= 60 {
+            return "\(totalSeconds / 60)′\(String(format: "%02d", totalSeconds % 60))″"
+        }
+        return "\(totalSeconds)″"
     }
 
     private static func makeWaveform(from pcm: [Float], bucketCount: Int = 36) -> [Float] {
