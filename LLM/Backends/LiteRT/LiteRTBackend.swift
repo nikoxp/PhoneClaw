@@ -433,40 +433,52 @@ final class LiteRTBackend: InferenceService {
                     #endif
 
                     // 根据媒体类型选择正确的 API:
-                    // - audio-only → engine.audioStreaming (专用 API, 需要 format 参数)
+                    // - audio-only → Conversation API (openConversation + conversationSendStreaming)
+                    //   standalone audioStreaming() 在 closeSession 后引擎状态可能不对
                     // - image (或 image+audio) → engine.multimodalStreaming
-                    let stream: AsyncThrowingStream<String, Error>
 
-                    if imagesData.isEmpty, audiosData.count == 1 {
-                        // Audio-only: 用专用 audio API (已验证可工作)
-                        print("[LiteRT] Using dedicated audioStreaming API")
-                        stream = engine.audioStreaming(
-                            audioData: audiosData[0],
-                            prompt: fullPrompt,
-                            format: .wav,
+                    if imagesData.isEmpty, !audiosData.isEmpty {
+                        // Audio-only: 用 Conversation API
+                        print("[LiteRT] Using Conversation API for audio")
+                        try await engine.openConversation(
                             temperature: self.samplingTemperature,
-                            maxTokens: self.maxOutputTokens
+                            maxTokens: Int(self.maxOutputTokens)
                         )
+                        let stream = engine.conversationSendStreaming(
+                            audioData: audiosData,
+                            imagesData: [],
+                            prompt: fullPrompt
+                        )
+                        for try await chunk in stream {
+                            if self.cancelled {
+                                continuation.finish()
+                                break
+                            }
+                            continuation.yield(chunk)
+                        }
+                        engine.closeConversation()
+                        if !self.cancelled {
+                            continuation.finish()
+                        }
                     } else {
                         // Image / mixed: 用通用 multimodal API
-                        stream = engine.multimodalStreaming(
+                        let stream = engine.multimodalStreaming(
                             audioData: audiosData,
                             imagesData: imagesData,
                             prompt: fullPrompt,
                             temperature: self.samplingTemperature,
                             maxTokens: self.maxOutputTokens
                         )
-                    }
-
-                    for try await chunk in stream {
-                        if self.cancelled {
-                            continuation.finish()
-                            break
+                        for try await chunk in stream {
+                            if self.cancelled {
+                                continuation.finish()
+                                break
+                            }
+                            continuation.yield(chunk)
                         }
-                        continuation.yield(chunk)
-                    }
-                    if !self.cancelled {
-                        continuation.finish()
+                        if !self.cancelled {
+                            continuation.finish()
+                        }
                     }
                 } catch {
                     continuation.finish(throwing: error)
