@@ -149,7 +149,8 @@ final class AudioCaptureService {
         resetCaptureState()
         clearStatus()
         guard let raw else { return nil }
-        return resampleTo16kHz(raw)
+        let resampled = resampleTo16kHz(raw)
+        return normalizeAudio(resampled)
     }
 
     func latestSnapshot() -> AudioCaptureSnapshot? {
@@ -216,6 +217,27 @@ final class AudioCaptureService {
             sampleRate: targetRate,
             channelCount: 1,
             duration: Double(count) / targetRate
+        )
+    }
+
+    /// Peak normalization: 麦克风录音 peak 通常只有 0.03-0.05,
+    /// 模型需要正常音量 (peak ~0.8) 才能正确分析内容。
+    private func normalizeAudio(_ snapshot: AudioCaptureSnapshot) -> AudioCaptureSnapshot {
+        let peak = snapshot.pcm.map { abs($0) }.max() ?? 0
+        guard peak > 0.001 else { return snapshot }  // 静音不处理
+
+        let targetPeak: Float = 0.8
+        let gain = targetPeak / peak
+
+        // 不放大已经够响的音频
+        guard gain > 1.5 else { return snapshot }
+
+        let normalized = snapshot.pcm.map { min(max($0 * gain, -1), 1) }
+        return AudioCaptureSnapshot(
+            pcm: normalized,
+            sampleRate: snapshot.sampleRate,
+            channelCount: snapshot.channelCount,
+            duration: snapshot.duration
         )
     }
 
