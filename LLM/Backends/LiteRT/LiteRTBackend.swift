@@ -52,6 +52,12 @@ final class LiteRTBackend: InferenceService {
     private(set) var lastModelOutput: String = ""
     /// Live 模式是否正在使用 persistent multimodal conversation。
     private(set) var liveModeActive = false
+    /// 最近一轮 Session benchmark 里的 prefill token 数。
+    private(set) var lastKVPrefillTokens: Int = 0
+    /// text -> multimodal 后是否等待下次 text 生成时 lazy reopen text session。
+    private var pendingTextSessionRestore = false
+    /// 当前 multimodal turn 是否由 AgentEngine 的 session-group 编排接管。
+    private var sessionGroupManagedMultimodal = false
 
     /// 模型文件路径解析 — 由外部 (ModelInstaller) 提供
     private let modelPathResolver: (String) -> URL?
@@ -86,6 +92,10 @@ final class LiteRTBackend: InferenceService {
             let path = modelsDir.appendingPathComponent(descriptor.fileName)
             return FileManager.default.fileExists(atPath: path.path) ? path : nil
         }
+    }
+
+    private static func promptRequiresFreshKVSession(_ prompt: String) -> Bool {
+        prompt.hasPrefix("<|turn>system\n")
     }
 
     // MARK: - InferenceService: Lifecycle
@@ -127,8 +137,11 @@ final class LiteRTBackend: InferenceService {
                 maxTokens: Int(self.maxOutputTokens)
             )
             self.kvSessionActive = true
-            self.lastModelOutput = ""
-            print("[LiteRT] Persistent session opened for KV cache reuse")
+        self.lastModelOutput = ""
+        self.lastKVPrefillTokens = 0
+        self.pendingTextSessionRestore = false
+        self.sessionGroupManagedMultimodal = false
+        print("[LiteRT] Persistent session opened for KV cache reuse")
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
             self.stats.loadTimeMs = elapsed
@@ -167,6 +180,8 @@ final class LiteRTBackend: InferenceService {
         kvSessionActive = false
         liveModeActive = false
         lastModelOutput = ""
+        pendingTextSessionRestore = false
+        sessionGroupManagedMultimodal = false
         Task { @MainActor in
             engine?.unload()
         }
@@ -187,6 +202,9 @@ final class LiteRTBackend: InferenceService {
         kvSessionActive = false
         sessionHasContext = false
         lastModelOutput = ""
+        lastKVPrefillTokens = 0
+        pendingTextSessionRestore = false
+        sessionGroupManagedMultimodal = false
         do {
             try await engine.openSession(
                 temperature: samplingTemperature,
@@ -216,6 +234,8 @@ final class LiteRTBackend: InferenceService {
         kvSessionActive = false
         sessionHasContext = false
         lastModelOutput = ""
+        pendingTextSessionRestore = false
+        sessionGroupManagedMultimodal = false
 
         print("[LiteRT] 📋 Live system prompt (\(systemPrompt?.count ?? 0) chars): \"\(systemPrompt?.prefix(200) ?? "nil")\"")
         try await engine.openConversation(
@@ -233,6 +253,8 @@ final class LiteRTBackend: InferenceService {
             kvSessionActive = false
             sessionHasContext = false
             lastModelOutput = ""
+            pendingTextSessionRestore = false
+            sessionGroupManagedMultimodal = false
             return
         }
 
@@ -243,6 +265,8 @@ final class LiteRTBackend: InferenceService {
         kvSessionActive = false
         sessionHasContext = false
         lastModelOutput = ""
+        pendingTextSessionRestore = false
+        sessionGroupManagedMultimodal = false
 
         do {
             try await engine.openSession(
@@ -263,6 +287,39 @@ final class LiteRTBackend: InferenceService {
         kvSessionActive = false
         sessionHasContext = false
         lastModelOutput = ""
+        pendingTextSessionRestore = false
+        sessionGroupManagedMultimodal = false
+    }
+
+    func prepareForSessionGroupTransition(
+        from previousGroup: SessionGroup?,
+        to nextGroup: SessionGroup
+    ) async {
+        // live group 的进出由 enterLiveMode / exitLiveMode 独立处理。
+        // hotfix 范围内的 session-group 编排只覆盖 text <-> multimodal。
+        guard isLoaded, !liveModeActive else { return }
+
+        switch (previousGroup, nextGroup) {
+        case (_, .multimodal):
+            sessionGroupManagedMultimodal = true
+            if previousGroup == .text {
+                pendingTextSessionRestore = true
+            }
+            if previousGroup == .text, kvSessionActive {
+                engine?.closeSession()
+                kvSessionActive = false
+                sessionHasContext = false
+                lastModelOutput = ""
+                lastKVPrefillTokens = 0
+                print("[LiteRT] Closed text session for multimodal group transition")
+            }
+        case (.multimodal, .text):
+            if pendingTextSessionRestore {
+                print("[LiteRT] Text session lazy reopen pending after multimodal")
+            }
+        default:
+            break
+        }
     }
 
     func cancel() {
@@ -284,6 +341,7 @@ final class LiteRTBackend: InferenceService {
                 maxTokens: Int(maxOutputTokens)
             )
             kvSessionActive = true
+            pendingTextSessionRestore = false
             print("[LiteRT] Text session restored after multimodal")
         } catch {
             print("[LiteRT] Failed to restore text session: \(error)")
@@ -303,19 +361,9 @@ final class LiteRTBackend: InferenceService {
             }
         }
 
-        // Auto-reopen persistent session if it was closed (e.g. by Live mode)
-        if !kvSessionActive {
-            Task {
-                await resetKVSession()
-            }
-            // First call after reopen — fall through to one-shot since session
-            // may not be ready yet. Next call will use the session.
-        }
-
         isGenerating = true
         cancelled = false
         let startTime = CFAbsoluteTimeGetCurrent()
-        let useSession = kvSessionActive
 
         return AsyncThrowingStream { [weak self] continuation in
             Task { [weak self] in
@@ -329,9 +377,23 @@ final class LiteRTBackend: InferenceService {
                 var modelOutput = ""
 
                 do {
+                    if self.pendingTextSessionRestore {
+                        print("[LiteRT] Lazy reopening text session after multimodal group transition")
+                    }
+
+                    if self.pendingTextSessionRestore || !self.kvSessionActive {
+                        await self.resetKVSession()
+                    } else if self.sessionHasContext,
+                              Self.promptRequiresFreshKVSession(prompt) {
+                        print("[LiteRT] Full prompt with active KV session detected — resetting session before generation")
+                        await self.resetKVSession()
+                    }
+
                     let stream: AsyncThrowingStream<String, Error>
-                    if useSession {
+                    if self.kvSessionActive {
                         // Persistent session: prompt 是增量 delta，KV cache 复用
+                        // 如果 prompt 是完整 system/history prompt，上面已经先重置 session，
+                        // 避免把 full prompt 继续堆进旧 KV cache 造成 token 上限立刻耗尽。
                         stream = engine.sessionGenerateStreaming(input: prompt)
                         await MainActor.run { self.sessionHasContext = true }
                     } else {
@@ -367,6 +429,7 @@ final class LiteRTBackend: InferenceService {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.lastModelOutput = finalOutput
+                    self.lastKVPrefillTokens = engine.lastSessionBenchmarkSnapshot?.prefillTokenCounts.last ?? 0
                     self.isGenerating = false
                     if let ttft = firstTokenTime {
                         self.stats.ttftMs = ttft
@@ -399,12 +462,17 @@ final class LiteRTBackend: InferenceService {
             return AsyncThrowingStream { $0.finish(throwing: ModelBackendError.modelNotLoaded) }
         }
 
+        let managedBySessionGroup = sessionGroupManagedMultimodal
+
         // LiteRT C API 同时只支持一个 session.
+        // 当 AgentEngine 未启用 session-group 编排时，保持旧行为：
         // multimodalStreaming 内部会创建临时 conversation, 必须先关闭 persistent text session.
         if kvSessionActive {
             engine.closeSession()
             kvSessionActive = false
+            sessionHasContext = false
             lastModelOutput = ""
+            lastKVPrefillTokens = 0
             print("[LiteRT] Closed text session for multimodal inference")
         }
 
@@ -492,10 +560,14 @@ final class LiteRTBackend: InferenceService {
 
                 await MainActor.run { [weak self] in
                     self?.isGenerating = false
+                    self?.sessionGroupManagedMultimodal = false
                 }
 
-                // 恢复 persistent text session (供后续 Chat 模式使用)
-                await self.restoreTextSession()
+                // session-group 编排启用时，multimodal -> text 采用 lazy reopen：
+                // 下一次 text generate 前再重开 persistent session。
+                if !managedBySessionGroup {
+                    await self.restoreTextSession()
+                }
             }
         }
     }
@@ -649,21 +721,6 @@ final class LiteRTBackend: InferenceService {
     }
 }
 
-// MARK: - Backend Error
-
-enum ModelBackendError: LocalizedError {
-    case modelNotLoaded
-    case modelFileMissing(String)
-    case memoryRisk(model: String, headroomMB: Int, recommendation: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .modelNotLoaded:
-            return "模型未加载，请先在配置页下载并加载模型。"
-        case .modelFileMissing(let name):
-            return "\(name) 模型文件不存在，请先在配置页下载。"
-        case .memoryRisk(let model, let headroomMB, let recommendation):
-            return "\(model) 当前剩余内存仅约 \(headroomMB) MB。\(recommendation)"
-        }
-    }
-}
+// `ModelBackendError` 已迁移到 LLM/Core/InferenceService.swift,
+// 作为 backend-neutral 错误类型给 AgentEngine 分类。
+// 任何 InferenceService 实现都可以抛它, CLI / MLX 后端同样可用。

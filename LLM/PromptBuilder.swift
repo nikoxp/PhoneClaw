@@ -13,6 +13,9 @@ struct PromptBuilder {
     private static let thinkingOpenMarker = "[[PHONECLAW_THINK]]"
     private static let thinkingCloseMarker = "[[/PHONECLAW_THINK]]"
     private static let thinkingLanguageInstruction = "如果启用了思考模式，思考通道和最终回答都必须使用简体中文，不要使用英文。"
+    private static let imageHistoryMarker = "[用户在此轮发送了图片]"
+    private static let imageFollowUpContextOpenMarker = "[上一轮图片上下文]"
+    private static let imageFollowUpContextCloseMarker = "[/上一轮图片上下文]"
 
     static func multimodalSystemPrompt(hasImages: Bool, hasAudio: Bool, enableThinking: Bool = false) -> String {
         let base: String
@@ -51,27 +54,40 @@ struct PromptBuilder {
     /// 模型必须知道"现在是何时"才能解析"明天/下午两点"等相对时间表达
     /// 并写出正确的 ISO 8601 字符串。
     /// 用本地时区(用户设备时区), 周几用中文,方便中文模型理解。
+    /// 热修阶段按小时粒度取整，减少前缀缓存污染。
     private static func currentTimeAnchorBlock() -> String {
+        if let fixed = ProcessInfo.processInfo.environment["PHONECLAW_FIXED_CURRENT_TIME_ANCHOR"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !fixed.isEmpty {
+            return "当前时间锚点(用于解析\"今天/明天/下午两点\"等相对时间): \(fixed)"
+        }
+
+        let calendar = Calendar.current
+        let now = Date()
+        let roundedNow = calendar.date(
+            bySettingHour: calendar.component(.hour, from: now),
+            minute: 0,
+            second: 0,
+            of: now
+        ) ?? now
+
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = .current
         formatter.dateFormat = "yyyy-MM-dd EEEE HH:mm"
-        let now = formatter.string(from: Date())
-        return "当前时间锚点(用于解析\"今天/明天/下午两点\"等相对时间): \(now)"
+        let anchor = formatter.string(from: roundedNow)
+        return "当前时间锚点(用于解析\"今天/明天/下午两点\"等相对时间): \(anchor)"
     }
 
-    private static func extractSystemBlock(from prompt: String) -> String {
+    private static func extractSystemBlock(from prompt: String, includeTimeAnchor: Bool = false) -> String {
         let raw: String
         if let turnEnd = prompt.range(of: "<turn|>\n") {
             raw = String(prompt[prompt.startIndex...turnEnd.upperBound])
         } else {
             raw = prompt
         }
-        // 在 secondary prompt 的 system block 末尾追加"当前时间锚点"。
-        // 这是 runtime data injection,不感知任何业务:任何调用 extractSystemBlock
-        // 的 prompt builder(load_skill 之后、tool answer、planner 各阶段等)
-        // 自动获得"现在是何时"的上下文,模型才能解析"明天/下午两点"等
-        // 相对时间表达。
+        guard includeTimeAnchor else { return raw }
+        guard !raw.contains("当前时间锚点(") else { return raw }
         return injectIntoSystemBlock(raw, extraInstructions: currentTimeAnchorBlock())
     }
 
@@ -114,6 +130,55 @@ struct PromptBuilder {
 
         let head = systemBlock[..<turnEnd.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
         return head + "\n\n" + trimmedExtra + "\n<turn|>\n"
+    }
+
+    private static func renderedUserHistoryContent(
+        for message: ChatMessage,
+        includeImageHistoryMarkers: Bool
+    ) -> String {
+        guard includeImageHistoryMarkers, !message.images.isEmpty else {
+            return message.content
+        }
+
+        let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return imageHistoryMarker
+        }
+        return trimmed + "\n" + imageHistoryMarker
+    }
+
+    private static func renderedCurrentUserContent(
+        _ userMessage: String,
+        imageFollowUpBridgeSummary: String?
+    ) -> String {
+        guard let rawSummary = imageFollowUpBridgeSummary?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawSummary.isEmpty else {
+            return userMessage
+        }
+
+        let normalizedSummary = sanitizedAssistantHistoryContent(rawSummary)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let clippedSummary: String
+        if normalizedSummary.count > 220 {
+            clippedSummary = String(normalizedSummary.prefix(220))
+        } else {
+            clippedSummary = normalizedSummary
+        }
+
+        return """
+        \(imageFollowUpContextOpenMarker)
+        上一轮用户发送了图片。
+        上一轮对图片的回答：\(clippedSummary)
+        如果当前问题是在追问上一轮图片，你必须优先基于以上回答继续作答。
+        如果是总结、复述、确认、简化说明，直接基于以上回答生成答案。
+        不要要求用户重新上传图片。
+        如果仅凭以上回答仍无法确定细节，可以明确说“仅根据上一轮描述无法确定”，但不要要求重新发送图片。
+        \(imageFollowUpContextCloseMarker)
+
+        当前问题：
+        \(userMessage)
+        """
     }
 
     // internal (not private): 被 LLM/LiveVoice/PromptBuilder+LiveVoice.swift 复用
@@ -188,6 +253,9 @@ struct PromptBuilder {
         userMessage: String,
         currentImageCount: Int = 0,
         tools: [SkillInfo],
+        includeTimeAnchor: Bool = false,
+        includeImageHistoryMarkers: Bool = false,
+        imageFollowUpBridgeSummary: String? = nil,
         history: [ChatMessage] = [],
         systemPrompt: String? = nil,
         enableThinking: Bool = false,
@@ -278,13 +346,8 @@ struct PromptBuilder {
             prompt += "\n\n" + thinkingLanguageInstruction
         }
 
-        // 时间锚点 — 必须在 system block 内, 模型才能算 "明天下午两点" → ISO 8601.
-        // 历史: 2026-04-17 真机日历创建 bug 根因. SKILL.md 里有 "结合 system prompt
-        // 的当前时间锚点算出 ISO 8601" 这种指令, 但 round 1 prompt 一直没注入锚点
-        // (只有 secondary prompt 走 extractSystemBlock 时才注入). 结果 E4B 瞎编日期
-        // (2026-04-08 而非"明天"), E2B 直接输出中文字面 "明天下午2:00" 让 tool 解析
-        // 失败. harness agent-e2e 复现+证实. multimodal turn 不带 (那条路径不走 SKILL).
-        if !isMultimodalTurn {
+        // 时间锚点只在显式声明需要解析相对时间的 skill 上注入，避免污染通用文本前缀。
+        if includeTimeAnchor && !isMultimodalTurn {
             prompt += "\n\n" + currentTimeAnchorBlock()
         }
 
@@ -304,7 +367,7 @@ struct PromptBuilder {
                 // Current multimodal support is image-first and single-image-per-turn.
                 // We keep historical image metadata in the UI, but only materialize
                 // image placeholders for the current turn and its tool follow-ups.
-                prompt += "<|turn>user\n\(msg.content)<turn|>\n"
+                prompt += "<|turn>user\n\(renderedUserHistoryContent(for: msg, includeImageHistoryMarkers: includeImageHistoryMarkers))<turn|>\n"
             case .assistant:
                 let assistantContent = sanitizedAssistantHistoryContent(msg.content)
                 prompt += "<|turn>model\n\(assistantContent)<turn|>\n"
@@ -319,7 +382,11 @@ struct PromptBuilder {
         }
 
         // 当前用户消息
-        prompt += "<|turn>user\n\(userMessage)\(imagePromptSuffix(count: currentImageCount))<turn|>\n"
+        let currentUserContent = renderedCurrentUserContent(
+            userMessage,
+            imageFollowUpBridgeSummary: imageFollowUpBridgeSummary
+        )
+        prompt += "<|turn>user\n\(currentUserContent)\(imagePromptSuffix(count: currentImageCount))<turn|>\n"
         prompt += "<|turn>model\n"
 
         return prompt
@@ -330,7 +397,9 @@ struct PromptBuilder {
         history: [ChatMessage] = [],
         systemPrompt: String? = nil,
         enableThinking: Bool = false,
-        historyDepth: Int = 2
+        historyDepth: Int = 2,
+        includeImageHistoryMarkers: Bool = false,
+        imageFollowUpBridgeSummary: String? = nil
     ) -> String {
         var prompt = "<|turn>system\n"
         if enableThinking {
@@ -347,7 +416,7 @@ struct PromptBuilder {
             if msg.role == .user && msg.id == recentHistory.last?.id { continue }
             switch msg.role {
             case .user:
-                prompt += "<|turn>user\n\(msg.content)<turn|>\n"
+                prompt += "<|turn>user\n\(renderedUserHistoryContent(for: msg, includeImageHistoryMarkers: includeImageHistoryMarkers))<turn|>\n"
             case .assistant:
                 let assistantContent = sanitizedAssistantHistoryContent(msg.content)
                 guard !assistantContent.isEmpty else { continue }
@@ -357,8 +426,139 @@ struct PromptBuilder {
             }
         }
 
-        prompt += "<|turn>user\n\(userMessage)<turn|>\n"
+        let currentUserContent = renderedCurrentUserContent(
+            userMessage,
+            imageFollowUpBridgeSummary: imageFollowUpBridgeSummary
+        )
+        prompt += "<|turn>user\n\(currentUserContent)<turn|>\n"
         prompt += "<|turn>model\n"
+        return prompt
+    }
+
+    static func buildImageFollowUpDecisionPrompt(
+        assistantSummary: String,
+        userQuestion: String
+    ) -> String {
+        let normalizedSummary = assistantSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clippedSummary: String
+        if normalizedSummary.count > 240 {
+            clippedSummary = String(normalizedSummary.prefix(240))
+        } else {
+            clippedSummary = normalizedSummary
+        }
+
+        return """
+        <|turn>system
+        你只做一个三分类判断。
+        如果用户的新问题和上一张图片无关，输出 NORMAL_TEXT。
+        如果用户的新问题是在追问上一张图片，但仅凭已有文字回答就能继续回答，输出 IMAGE_TEXT。
+        如果用户的新问题必须重新查看上一张图片的视觉细节才能可靠回答，输出 RE_MULTIMODAL。
+        只输出这三个标签中的一个，不要输出任何别的字。
+        <turn|>
+        <|turn>user
+        最近一轮与图片相关的助手回答：
+        \(clippedSummary)
+
+        用户新问题：
+        \(userQuestion)
+        <turn|>
+        <|turn>model
+        """
+    }
+
+    static func buildImageFollowUpTextPrompt(
+        userMessage: String,
+        assistantSummary: String,
+        systemPrompt: String? = nil,
+        enableThinking: Bool = false
+    ) -> String {
+        let normalizedSummary = sanitizedAssistantHistoryContent(assistantSummary)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let clippedSummary: String
+        if normalizedSummary.count > 280 {
+            clippedSummary = String(normalizedSummary.prefix(280))
+        } else {
+            clippedSummary = normalizedSummary
+        }
+
+        var prompt = "<|turn>system\n"
+        if enableThinking {
+            prompt += "<|think|>"
+        }
+        let basePrompt = (systemPrompt ?? defaultSystemPrompt).trimmingCharacters(in: .whitespacesAndNewlines)
+        prompt += basePrompt
+        prompt += "\n\n你正在继续回答同一张图片相关的追问。"
+        prompt += "\n你只能基于下面给出的上一轮图片回答继续作答，不要假装重新看到了图片。"
+        prompt += "\n不要要求用户重新上传图片。"
+        prompt += "\n如果用户要求总结、概括、复述或确认，直接基于上一轮图片回答给出整理后的答案。"
+        prompt += "\n如果仅根据上一轮图片回答无法确定，就明确说“仅根据上一轮描述无法确定”。"
+        prompt += "\n直接回答问题，不要复述规则。"
+        prompt += "\n输出 1 到 2 句完整的简体中文句子，必须自然收尾并以中文句号结束，不要只输出半句。"
+        if enableThinking {
+            prompt += "\n\n" + thinkingLanguageInstruction
+        }
+        prompt += "\n<turn|>\n"
+        prompt += """
+        <|turn>user
+        上一轮对图片的回答：
+        \(clippedSummary)
+
+        当前追问：
+        \(userMessage)
+        <turn|>
+        <|turn>model
+        """
+        return prompt
+    }
+
+    static func buildImageFollowUpRepairPrompt(
+        userMessage: String,
+        assistantSummary: String,
+        partialAnswer: String,
+        systemPrompt: String? = nil,
+        enableThinking: Bool = false
+    ) -> String {
+        let normalizedSummary = sanitizedAssistantHistoryContent(assistantSummary)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let clippedSummary: String
+        if normalizedSummary.count > 280 {
+            clippedSummary = String(normalizedSummary.prefix(280))
+        } else {
+            clippedSummary = normalizedSummary
+        }
+
+        let normalizedPartial = sanitizedAssistantHistoryContent(partialAnswer)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var prompt = "<|turn>system\n"
+        if enableThinking {
+            prompt += "<|think|>"
+        }
+        let basePrompt = (systemPrompt ?? defaultSystemPrompt).trimmingCharacters(in: .whitespacesAndNewlines)
+        prompt += basePrompt
+        prompt += "\n\n你只负责把一段未说完的图片追问回答，改写成 1 到 2 句完整、自然、简洁的简体中文。"
+        prompt += "\n只能基于给出的上一轮图片回答补全，不要假装重新看到了图片。"
+        prompt += "\n不要要求用户重新上传图片，不要解释规则，不要输出半句。"
+        prompt += "\n严禁输出 <tool_call>、load_skill、JSON 或任何工具调用内容。"
+        prompt += "\n如果信息仍然不足，就明确说“仅根据上一轮图片回答无法确定”。"
+        prompt += "\n最终答案必须自然收尾并以中文句号结束。"
+        if enableThinking {
+            prompt += "\n\n" + thinkingLanguageInstruction
+        }
+        prompt += "\n<turn|>\n"
+        prompt += """
+        <|turn>user
+        上一轮对图片的回答：
+        \(clippedSummary)
+
+        当前追问：
+        \(userMessage)
+
+        回答草稿（可能未完成）：
+        \(normalizedPartial)
+        <turn|>
+        <|turn>model
+        """
         return prompt
     }
 
@@ -370,6 +570,7 @@ struct PromptBuilder {
         userQuestion: String,
         skillInstructions: String,
         availableTools: [String],
+        includeTimeAnchor: Bool = false,
         currentImageCount: Int = 0,
         forceResponse: Bool = false
     ) -> String {
@@ -394,7 +595,7 @@ struct PromptBuilder {
             """
         }
 
-        let systemBlock = extractSystemBlock(from: originalPrompt)
+        let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
         let systemInstructions = injectIntoSystemBlock(
             systemBlock,
             extraInstructions: """
@@ -487,7 +688,6 @@ struct PromptBuilder {
         let leanSystemBlock = """
         <|turn>system
         \(defaultSystemPrompt) 用中文回答, 简洁实用.
-        \(currentTimeAnchorBlock())
         <turn|>
 
         """
@@ -520,9 +720,10 @@ struct PromptBuilder {
         skillInstructions: String,
         toolName: String,
         toolParameters: String,
+        includeTimeAnchor: Bool = false,
         currentImageCount: Int = 0
     ) -> String {
-        let systemBlock = extractSystemBlock(from: originalPrompt)
+        let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
         let systemInstructions = injectIntoSystemBlock(
             systemBlock,
             extraInstructions: """
@@ -563,9 +764,10 @@ struct PromptBuilder {
         userQuestion: String,
         skillInstructions: String,
         allowedToolsSummary: String,
+        includeTimeAnchor: Bool = false,
         currentImageCount: Int = 0
     ) -> String {
-        let systemBlock = extractSystemBlock(from: originalPrompt)
+        let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
         let systemInstructions = injectIntoSystemBlock(
             systemBlock,
             extraInstructions: """
@@ -735,9 +937,10 @@ struct PromptBuilder {
         toolName: String,
         toolParameters: String,
         completedStepSummary: String = "",
+        includeTimeAnchor: Bool = false,
         currentImageCount: Int = 0
     ) -> String {
-        let systemBlock = extractSystemBlock(from: originalPrompt)
+        let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
         let systemInstructions = injectIntoSystemBlock(
             systemBlock,
             extraInstructions: """

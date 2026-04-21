@@ -109,6 +109,103 @@ public struct InferenceStats: Sendable {
     public init() {}
 }
 
+// MARK: - Hotfix Prompt Pipeline DTOs
+
+public enum PromptShape: String, Sendable, Codable {
+    case lightFull
+    case lightDelta
+    case agentFull
+    case toolFollowup
+    case thinking
+    case multimodal
+    case live
+}
+
+public enum SessionGroup: String, Sendable, Codable {
+    case text
+    case multimodal
+    case live
+}
+
+public enum SessionResetReason: String, Sendable, Codable {
+    case normalContinuation
+    case firstTurn
+    case systemChanged
+    case shapeChanged
+    case toolSchemaChanged
+    case thinkingToggle
+    case retry
+    case enterText
+    case enterMultimodal
+    case enterLive
+    case forceFresh
+}
+
+public enum ReuseDecision: Sendable, Equatable {
+    case reuse
+    case reset(SessionResetReason)
+}
+
+public struct BudgetDecision: Sendable, Equatable {
+    public let estimatedPromptTokens: Int
+    public let reservedOutputTokens: Int
+    public let historyMessagesIncluded: Int
+    public let historyCharsIncluded: Int
+
+    public init(
+        estimatedPromptTokens: Int,
+        reservedOutputTokens: Int,
+        historyMessagesIncluded: Int,
+        historyCharsIncluded: Int
+    ) {
+        self.estimatedPromptTokens = estimatedPromptTokens
+        self.reservedOutputTokens = reservedOutputTokens
+        self.historyMessagesIncluded = historyMessagesIncluded
+        self.historyCharsIncluded = historyCharsIncluded
+    }
+}
+
+public struct CanonicalToolResult: Sendable, Equatable {
+    public let success: Bool
+    public let summary: String
+    public let detail: String
+    public let errorCode: String?
+
+    public init(
+        success: Bool,
+        summary: String,
+        detail: String,
+        errorCode: String? = nil
+    ) {
+        self.success = success
+        self.summary = summary
+        self.detail = detail
+        self.errorCode = errorCode
+    }
+}
+
+public struct PromptPlan: Sendable, Equatable {
+    public let shape: PromptShape
+    public let sessionGroup: SessionGroup
+    public let prompt: String
+    public let budgetDecision: BudgetDecision
+    public let reuseDecision: ReuseDecision
+
+    public init(
+        shape: PromptShape,
+        sessionGroup: SessionGroup,
+        prompt: String,
+        budgetDecision: BudgetDecision,
+        reuseDecision: ReuseDecision
+    ) {
+        self.shape = shape
+        self.sessionGroup = sessionGroup
+        self.prompt = prompt
+        self.budgetDecision = budgetDecision
+        self.reuseDecision = reuseDecision
+    }
+}
+
 // MARK: - Model Family
 
 /// 模型家族。同一家族共享 prompt 格式和能力特征。
@@ -136,19 +233,31 @@ public struct ModelCapabilities: Sendable {
     public let supportsLive: Bool
     public let supportsStructuredPlanning: Bool
     public let supportsThinking: Bool
+    public let supportsPersistentSession: Bool
+    public let supportsSessionSnapshot: Bool
+    public let safeContextBudgetTokens: Int
+    public let defaultReservedOutputTokens: Int
 
     public init(
         supportsVision: Bool = false,
         supportsAudio: Bool = false,
         supportsLive: Bool = false,
         supportsStructuredPlanning: Bool = false,
-        supportsThinking: Bool = false
+        supportsThinking: Bool = false,
+        supportsPersistentSession: Bool = false,
+        supportsSessionSnapshot: Bool = false,
+        safeContextBudgetTokens: Int = 3200,
+        defaultReservedOutputTokens: Int = 1024
     ) {
         self.supportsVision = supportsVision
         self.supportsAudio = supportsAudio
         self.supportsLive = supportsLive
         self.supportsStructuredPlanning = supportsStructuredPlanning
         self.supportsThinking = supportsThinking
+        self.supportsPersistentSession = supportsPersistentSession
+        self.supportsSessionSnapshot = supportsSessionSnapshot
+        self.safeContextBudgetTokens = safeContextBudgetTokens
+        self.defaultReservedOutputTokens = defaultReservedOutputTokens
     }
 }
 

@@ -24,6 +24,12 @@ private extension ProcessInfo {
 // MARK: - 主入口
 
 private enum CaptureOrigin { case menu, holdToTalk }
+private struct ScrollSignal: Equatable {
+    let lastMessageID: UUID?
+    let messageCount: Int
+    let lastMessageContentCount: Int
+    let isProcessing: Bool
+}
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -56,39 +62,14 @@ struct ContentView: View {
         buildDisplayItems(from: engine.messages, isProcessing: engine.isProcessing)
     }
 
-    private var scrollAnchorState: String {
-        guard let last = displayItems.last else {
-            return "empty:\(engine.isProcessing)"
-        }
-
-        switch last {
-        case .user(let msg):
-            return [
-                "user",
-                msg.id.uuidString,
-                String(msg.content.count),
-                String(msg.images.count),
-                String(msg.audios.count)
-            ].joined(separator: ":")
-        case .response(let block):
-            let skillSignature = block.skills.map {
-                [
-                    $0.id.uuidString,
-                    $0.skillName,
-                    $0.skillStatus ?? "",
-                    $0.toolName ?? ""
-                ].joined(separator: "|")
-            }.joined(separator: "||")
-
-            return [
-                "response",
-                block.id.uuidString,
-                block.thinkingText ?? "",
-                block.responseText ?? "",
-                block.isThinking ? "1" : "0",
-                skillSignature
-            ].joined(separator: ":")
-        }
+    private var scrollSignal: ScrollSignal {
+        let lastMessage = engine.messages.last
+        return ScrollSignal(
+            lastMessageID: lastMessage?.id,
+            messageCount: engine.messages.count,
+            lastMessageContentCount: lastMessage?.content.count ?? 0,
+            isProcessing: engine.isProcessing
+        )
     }
 
     var body: some View {
@@ -179,24 +160,25 @@ struct ContentView: View {
                 .padding(.vertical, 20)
             }
             .scrollIndicators(.hidden)
-            .onAppear { scrollTo(proxy, animated: false) }
-            .onChange(of: engine.messages.count) { _, _ in scrollTo(proxy) }
-            .onChange(of: engine.isProcessing) { _, _ in scrollTo(proxy) }
-            .onChange(of: scrollAnchorState) { _, _ in scrollTo(proxy) }
+            .task(id: scrollSignal) {
+                let signal = scrollSignal
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                scrollTo(proxy, animated: !signal.isProcessing)
+            }
         }
     }
 
+    @MainActor
     private func scrollTo(_ proxy: ScrollViewProxy, animated: Bool = true) {
         guard let last = displayItems.last else { return }
         let lastID = last.id
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(lastID, anchor: .bottom)
-                }
-            } else {
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) {
                 proxy.scrollTo(lastID, anchor: .bottom)
             }
+        } else {
+            proxy.scrollTo(lastID, anchor: .bottom)
         }
     }
 

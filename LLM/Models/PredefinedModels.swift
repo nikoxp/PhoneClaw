@@ -30,7 +30,11 @@ public extension ModelDescriptor {
             supportsAudio: true,
             supportsLive: true,
             supportsStructuredPlanning: false,
-            supportsThinking: true
+            supportsThinking: true,
+            supportsPersistentSession: true,
+            supportsSessionSnapshot: false,
+            safeContextBudgetTokens: 3500,
+            defaultReservedOutputTokens: 1024
         ),
         runtimeProfile: MLXModelProfiles.gemma4_e2b
     )
@@ -58,7 +62,11 @@ public extension ModelDescriptor {
             supportsAudio: true,
             supportsLive: false,          // E4B CPU 延迟太高，不适合 Live
             supportsStructuredPlanning: true,
-            supportsThinking: true
+            supportsThinking: true,
+            supportsPersistentSession: true,
+            supportsSessionSnapshot: false,
+            safeContextBudgetTokens: 2900,
+            defaultReservedOutputTokens: 896
         ),
         runtimeProfile: MLXModelProfiles.gemma4_e4b
     )
