@@ -1,0 +1,33 @@
+name: Sync Fork
+
+on:
+  schedule:
+    # 每天凌晨 0 点执行 (UTC 时间)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 允许手动点击按钮立即执行
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 必须赋予写入权限以推送更新
+
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整历史记录
+
+      - name: Sync upstream changes
+        # 使用官方 GitHub CLI 直接进行同步，简单且安全
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 配置 git 用户信息（防止报错）
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 执行同步命令
+          # --force 会强制覆盖，建议在纯镜像仓库使用
+          # 如果有自己的改动，建议去掉 --force 使用默认合并
+          gh repo sync ${{ github.repository }} -b main
