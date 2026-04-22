@@ -78,7 +78,7 @@ final class LiteRTBackend: InferenceService {
         self.modelPathResolver = modelPathResolver
         self.onModelLoaded = onModelLoaded
         self.onModelUnloaded = onModelUnloaded
-        self.stats.backend = "litert-cpu"
+        self.stats.backend = "litert-gpu"
     }
 
     /// 便捷 init: 使用默认路径 (Documents/models/<fileName>)
@@ -123,7 +123,7 @@ final class LiteRTBackend: InferenceService {
         let loadStart = CFAbsoluteTimeGetCurrent()
 
         do {
-            let newEngine = LiteRTLMEngine(modelPath: modelPath, backend: "cpu")
+            let newEngine = LiteRTLMEngine(modelPath: modelPath, backend: "gpu")
             try await newEngine.load()
 
             self.engine = newEngine

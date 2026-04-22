@@ -50,7 +50,7 @@ enum AudioBypassTest {
         }
         print("[AudioBypass] audio bytes=\(audioData.count)")
 
-        let engine = LiteRTLMEngine(modelPath: modelPath, backend: "cpu")
+        let engine = LiteRTLMEngine(modelPath: modelPath, backend: "gpu")
         do {
             let loadStart = Date()
             try await engine.load()

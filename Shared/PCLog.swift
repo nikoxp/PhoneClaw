@@ -24,7 +24,7 @@ enum PCLog {
 
     static func modelLoaded(
         modelID: String,
-        backend: String = "litert-cpu",
+        backend: String = "litert-gpu",
         loadMs: Double
     ) {
         logger.info("[Model] phase=load model=\(modelID) backend=\(backend) load_ms=\(Int(loadMs)) status=ok")
