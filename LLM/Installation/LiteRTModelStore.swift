@@ -306,6 +306,8 @@ final class LiteRTModelStore: ModelInstaller {
 
     @MainActor
     fileprivate func applyDownloadProgress(_ snapshot: DownloadProgressSnapshot) {
+        guard activeTasks[snapshot.assetID] != nil else { return }
+
         let currentFile: String?
         if let activeFilePath = snapshot.activeFilePath {
             if let activeSourceLabel = snapshot.activeSourceLabel {

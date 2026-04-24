@@ -189,6 +189,8 @@ final class LiveModelStore {
 
     @MainActor
     fileprivate func applyDownloadProgress(_ snapshot: DownloadProgressSnapshot) {
+        guard currentTask != nil, activeTasks[snapshot.assetID] != nil else { return }
+
         progressSnapshots[snapshot.assetID] = snapshot
         applyAggregateProgress(activeSnapshot: snapshot)
     }
