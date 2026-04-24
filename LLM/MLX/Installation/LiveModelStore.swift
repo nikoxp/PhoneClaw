@@ -65,14 +65,16 @@ final class LiveModelStore {
         }
     }
 
-    func removeAll() throws {
+    @MainActor
+    func removeAll() async throws {
+        cancelDownload()
         for asset in LiveModelDefinition.all {
             if let resolved = LiveModelDefinition.resolve(for: asset),
                resolved.path.hasPrefix(ModelPaths.documentsRoot().path) {
                 try? FileManager.default.removeItem(at: resolved)
             }
             try? FileManager.default.removeItem(at: LiveModelDefinition.partialDirectory(for: asset))
-            Task { try? await manifestStore().purge(assetID: asset.id) }
+            try await manifestStore().purge(assetID: asset.id)
         }
         installState = .notInstalled
         downloadMetrics = nil
@@ -127,8 +129,15 @@ final class LiveModelStore {
                 let snapshot = try await task.value
                 activeTasks[plan.liveAsset.id] = nil
 
-                try validateRequiredFiles(for: plan.liveAsset, at: stagingDirectory)
-                try finalize(plan.liveAsset, stagingDirectory: stagingDirectory)
+                try LiveModelInstallFinalizer.validateRequiredFiles(
+                    requiredFiles: plan.liveAsset.requiredFiles,
+                    assetID: plan.liveAsset.id,
+                    at: stagingDirectory
+                )
+                try LiveModelInstallFinalizer.finalize(
+                    stagingDirectory: stagingDirectory,
+                    finalDirectory: LiveModelDefinition.downloadedDirectory(for: plan.liveAsset)
+                )
                 try await store.purge(assetID: plan.liveAsset.id)
 
                 await MainActor.run {
@@ -226,53 +235,6 @@ final class LiveModelStore {
         return total
     }
 
-    private func finalize(_ asset: LiveModelAsset, stagingDirectory: URL) throws {
-        let finalDirectory = LiveModelDefinition.downloadedDirectory(for: asset)
-        let parent = finalDirectory.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: finalDirectory.path) {
-            try FileManager.default.removeItem(at: finalDirectory)
-        }
-        try FileManager.default.moveItem(at: stagingDirectory, to: finalDirectory)
-    }
-
-    private func validateRequiredFiles(for asset: LiveModelAsset, at directory: URL) throws {
-        for requiredFile in asset.requiredFiles {
-            let url = directory.appendingPathComponent(requiredFile)
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-                throw DownloadFailure.invalidResponse("\(asset.id) missing required file: \(requiredFile)")
-            }
-            if isDirectory.boolValue {
-                guard directoryContainsNonEmptyFile(url) else {
-                    throw DownloadFailure.invalidResponse("\(asset.id) required directory is empty: \(requiredFile)")
-                }
-            } else {
-                guard fileSize(url) > 0 else {
-                    throw DownloadFailure.invalidResponse("\(asset.id) required file is empty: \(requiredFile)")
-                }
-            }
-        }
-    }
-
-    private func directoryContainsNonEmptyFile(_ directory: URL) -> Bool {
-        guard let enumerator = FileManager.default.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
-        ) else {
-            return false
-        }
-        for case let url as URL in enumerator {
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-                  values.isRegularFile == true,
-                  (values.fileSize ?? 0) > 0 else {
-                continue
-            }
-            return true
-        }
-        return false
-    }
-
     private func cleanupLegacyPartialsWithoutManifest() {
         for asset in LiveModelDefinition.all {
             let partial = LiveModelDefinition.partialDirectory(for: asset)
@@ -316,11 +278,6 @@ final class LiveModelStore {
         formatter.allowedUnits = [.useGB, .useMB, .useKB]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
-    }
-
-    private func fileSize(_ url: URL) -> Int64 {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) else { return 0 }
-        return (attrs[.size] as? Int64) ?? 0
     }
 
     private func manifestStore() -> DownloadManifestStore {

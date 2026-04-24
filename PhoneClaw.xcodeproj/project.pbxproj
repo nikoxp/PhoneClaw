@@ -110,6 +110,7 @@
 		AA1000000000000000000110 /* LiveModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000110 /* LiveModelDownloader.swift */; };
 		AA1000000000000000000111 /* LiveDownloadPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000111 /* LiveDownloadPlanner.swift */; };
 		AA1000000000000000000112 /* LiveModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000112 /* LiveModelStore.swift */; };
+		AA1000000000000000000113 /* LiveModelInstallFinalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000113 /* LiveModelInstallFinalizer.swift */; };
 		AA1000000000000000000202 /* MLXLocalLLMService+KVReuse.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000202 /* MLXLocalLLMService+KVReuse.swift */; };
 		AB877F6AD9467C63509E499F /* ResponseUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4628E2A5FD49247E1D6BE283 /* ResponseUI.swift */; };
 		B0FB758750EA8CEBC4DBF08A /* (null) in Sources */ = {isa = PBXBuildFile; };
@@ -246,6 +247,7 @@
 		AA2000000000000000000110 /* LiveModelDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveModelDownloader.swift; sourceTree = "<group>"; };
 		AA2000000000000000000111 /* LiveDownloadPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveDownloadPlanner.swift; sourceTree = "<group>"; };
 		AA2000000000000000000112 /* LiveModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveModelStore.swift; sourceTree = "<group>"; };
+		AA2000000000000000000113 /* LiveModelInstallFinalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveModelInstallFinalizer.swift; sourceTree = "<group>"; };
 		AA2000000000000000000202 /* MLXLocalLLMService+KVReuse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MLXLocalLLMService+KVReuse.swift"; sourceTree = "<group>"; };
 		B1A2C3D4E5F607182930B101 /* Library */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Library; sourceTree = "<group>"; };
 		B1A2C3D4E5F607182930C001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
@@ -414,6 +416,7 @@
 				AA2000000000000000000109 /* LiveModelDefinition.swift */,
 				AA2000000000000000000111 /* LiveDownloadPlanner.swift */,
 				AA2000000000000000000112 /* LiveModelStore.swift */,
+				AA2000000000000000000113 /* LiveModelInstallFinalizer.swift */,
 				AA2000000000000000000110 /* LiveModelDownloader.swift */,
 			);
 			path = Installation;
@@ -868,6 +871,7 @@
 				AA1000000000000000000109 /* LiveModelDefinition.swift in Sources */,
 				AA1000000000000000000111 /* LiveDownloadPlanner.swift in Sources */,
 				AA1000000000000000000112 /* LiveModelStore.swift in Sources */,
+				AA1000000000000000000113 /* LiveModelInstallFinalizer.swift in Sources */,
 				AA1000000000000000000110 /* LiveModelDownloader.swift in Sources */,
 				AA1000000000000000000006 /* Gemma4Registration.swift in Sources */,
 				AA1000000000000000000018 /* Gemma4VisionModel.swift in Sources */,

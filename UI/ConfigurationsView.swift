@@ -452,7 +452,7 @@ struct ConfigurationsView: View {
             EmptyView()
         case .downloaded:
             Button(tr("删除", "Delete")) {
-                try? liveDownloader.removeAll()
+                Task { try? await liveDownloader.removeAll() }
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(Theme.accent)
