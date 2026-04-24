@@ -26,7 +26,7 @@ final class LiteRTBackend: InferenceService {
     private(set) var isLoaded = false
     private(set) var isLoading = false
     private(set) var isGenerating = false
-    var statusMessage = "等待加载模型..."
+    var statusMessage = tr("等待加载模型...", "Waiting to load model...")
     private(set) var stats = InferenceStats()
 
     // MARK: - Sampling Config
@@ -162,12 +162,17 @@ final class LiteRTBackend: InferenceService {
         guard let modelPath = modelPathResolver(modelID) else {
             let descriptor = ModelDescriptor.allModels.first { $0.id == modelID }
             let name = descriptor?.displayName ?? modelID
-            statusMessage = "请先在配置中下载 \(name) 模型"
+            statusMessage = tr(
+                "请先在配置中下载 \(name) 模型",
+                "Please download the \(name) model in Configuration first."
+            )
             throw ModelBackendError.modelFileMissing(name)
         }
 
         isLoading = true
-        statusMessage = mode == .multimodal ? "正在加载多模态模型..." : "正在加载模型..."
+        statusMessage = mode == .multimodal
+            ? tr("正在加载多模态模型...", "Loading multimodal model...")
+            : tr("正在加载模型...", "Loading model...")
         cancelled = false
 
         let loadStart = CFAbsoluteTimeGetCurrent()
@@ -243,7 +248,10 @@ final class LiteRTBackend: InferenceService {
             self.stats.loadTimeMs = elapsed
 
             let descriptor = ModelDescriptor.allModels.first { $0.id == modelID }
-            statusMessage = "已加载 \(descriptor?.displayName ?? modelID)"
+            statusMessage = tr(
+                "已加载 \(descriptor?.displayName ?? modelID)",
+                "Loaded \(descriptor?.displayName ?? modelID)"
+            )
             PCLog.modelLoaded(modelID: modelID, backend: "litert-\(preferredBackend)", loadMs: elapsed)
             onModelLoaded?(modelID)
         } catch {
@@ -264,7 +272,10 @@ final class LiteRTBackend: InferenceService {
                 userInfo: ["modelID": modelID]
             )
 
-            statusMessage = "❌ \(displayName) 文件损坏，请重新下载"
+            statusMessage = tr(
+                "❌ \(displayName) 文件损坏，请重新下载",
+                "❌ \(displayName) file is corrupt. Please download it again."
+            )
             PCLog.modelLoadFailed(modelID: modelID, reason: error.localizedDescription)
             throw error
         }

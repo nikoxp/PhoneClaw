@@ -185,11 +185,20 @@ public enum ModelBackendError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelNotLoaded:
-            return "模型未加载，请先在配置页下载并加载模型。"
+            return tr(
+                "模型未加载，请先在配置页下载并加载模型。",
+                "Model not loaded. Please download and load a model from the configuration page first."
+            )
         case .modelFileMissing(let name):
-            return "\(name) 模型文件不存在，请先在配置页下载。"
+            return tr(
+                "\(name) 模型文件不存在，请先在配置页下载。",
+                "\(name) model file not found. Please download it from the configuration page first."
+            )
         case .memoryRisk(let model, let headroomMB, let recommendation):
-            return "\(model) 当前剩余内存仅约 \(headroomMB) MB。\(recommendation)"
+            return tr(
+                "\(model) 当前剩余内存仅约 \(headroomMB) MB。\(recommendation)",
+                "\(model): only about \(headroomMB) MB of memory is available. \(recommendation)"
+            )
         }
     }
 }
