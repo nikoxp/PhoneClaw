@@ -322,7 +322,10 @@ struct PromptBuilder {
 
         // 仅全量注入（无匹配命中）时，提示模型可通过 list_skills 发现更多能力
         if showListSkillsHint && !isMultimodalTurn {
-            prompt += "\n如果以上列出的能力都不匹配用户需求，可以调用 list_skills 查询更多能力：\n<tool_call>\n{\"name\": \"list_skills\", \"arguments\": {\"query\": \"用户需求描述\"}}\n</tool_call>\n"
+            prompt += tr(
+                "\n如果以上列出的能力都不匹配用户需求，可以调用 list_skills 查询更多能力：\n<tool_call>\n{\"name\": \"list_skills\", \"arguments\": {\"query\": \"用户需求描述\"}}\n</tool_call>\n",
+                "\nIf none of the abilities above match the user's needs, you can call list_skills to discover more:\n<tool_call>\n{\"name\": \"list_skills\", \"arguments\": {\"query\": \"<user need description>\"}}\n</tool_call>\n"
+            )
         }
 
         // Router 已匹配的 skill: 直接 inline 它的 body + 工具白名单, 跳过 load_skill 往返。
@@ -335,14 +338,29 @@ struct PromptBuilder {
         if !preloadedSkills.isEmpty && !isMultimodalTurn {
             let allAllowed = Array(Set(preloadedSkills.flatMap(\.allowedTools))).sorted()
             prompt += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
-            prompt += "【已锁定能力 — 直接调用工具, 不需要先 load_skill】\n"
+            prompt += tr(
+                "【已锁定能力 — 直接调用工具, 不需要先 load_skill】\n",
+                "[Locked ability — call tools directly, no need to load_skill first]\n"
+            )
             if allAllowed.isEmpty {
-                prompt += "当前锁定的 Skill 没有工具, 按 Skill 指令直接给最终答案, 禁止输出 <tool_call>。\n"
+                prompt += tr(
+                    "当前锁定的 Skill 没有工具, 按 Skill 指令直接给最终答案, 禁止输出 <tool_call>。\n",
+                    "The locked Skill has no tools. Follow the Skill instructions and give the final answer directly. Do not emit <tool_call>.\n"
+                )
             } else {
-                prompt += "\n可调用的工具 (只允许这些名字, 其他名字一律视为非法, 不要凭空编造):\n"
+                prompt += tr(
+                    "\n可调用的工具 (只允许这些名字, 其他名字一律视为非法, 不要凭空编造):\n",
+                    "\nCallable tools (only these names; any other name is illegal, do not fabricate):\n"
+                )
                 prompt += allAllowed.map { "- `\($0)`" }.joined(separator: "\n") + "\n"
-                prompt += "\n如果需要操作, 输出:\n<tool_call>\n{\"name\": \"<上面列表中的名字>\", \"arguments\": {...}}\n</tool_call>\n"
-                prompt += "如果不需要工具就直接给最终答案正文。**不要**再调用 load_skill, 已经加载好了。\n"
+                prompt += tr(
+                    "\n如果需要操作, 输出:\n<tool_call>\n{\"name\": \"<上面列表中的名字>\", \"arguments\": {...}}\n</tool_call>\n",
+                    "\nIf action is needed, emit:\n<tool_call>\n{\"name\": \"<a name from the list above>\", \"arguments\": {...}}\n</tool_call>\n"
+                )
+                prompt += tr(
+                    "如果不需要工具就直接给最终答案正文。**不要**再调用 load_skill, 已经加载好了。\n",
+                    "If no tools are needed, give the final answer directly. **Do not** call load_skill again — it's already loaded.\n"
+                )
             }
             for sk in preloadedSkills {
                 prompt += "\n━━ Skill: \(sk.displayName) ━━\n"
