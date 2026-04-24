@@ -58,7 +58,7 @@ struct SkillMetadata {
     let chipLabel: String?
 
     var displayName: String {
-        if Locale.preferredLanguages.contains(where: { $0.lowercased().hasPrefix("zh") }),
+        if LanguageService.shared.current.isChinese,
            let localizedNameZh,
            !localizedNameZh.isEmpty {
             return localizedNameZh
@@ -87,13 +87,30 @@ struct SkillDefinition: Identifiable {
 enum SkillLoader {
 
     /// 从 Bundle.main/Library/<id>/SKILL.md 读取并解析为 SkillDefinition
+    ///
+    /// 语言选择:
+    ///   - 英文 locale 先找 `SKILL.en.md`, 找不到 fallback 回 `SKILL.md`
+    ///   - 中文 locale 直接 `SKILL.md`
+    ///   - 这样增量: skill 作者可以先只维护 zh, 后续陆续加 en 版
     static func loadFromBundle(id: String) -> SkillDefinition? {
+        let resourceName: String = {
+            if LanguageService.shared.current.isEnglish,
+               Bundle.main.url(
+                   forResource: "SKILL.en",
+                   withExtension: "md",
+                   subdirectory: "Library/\(id)"
+               ) != nil {
+                return "SKILL.en"
+            }
+            return "SKILL"
+        }()
+
         guard let bundleURL = Bundle.main.url(
-            forResource: "SKILL",
+            forResource: resourceName,
             withExtension: "md",
             subdirectory: "Library/\(id)"
         ) else {
-            print("[SkillLoader] skill '\(id)' 未找到: Bundle.main/Library/\(id)/SKILL.md")
+            print("[SkillLoader] skill '\(id)' 未找到: Bundle.main/Library/\(id)/\(resourceName).md")
             return nil
         }
         guard let content = try? String(contentsOf: bundleURL, encoding: .utf8) else {
