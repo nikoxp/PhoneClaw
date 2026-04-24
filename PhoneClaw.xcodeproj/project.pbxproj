@@ -128,6 +128,8 @@
 		BB2000000000000000000008 /* LiteRTCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000008 /* LiteRTCatalog.swift */; };
 		BB2000000000000000000009 /* LiteRTModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000009 /* LiteRTModelStore.swift */; };
 		BB2000000000000000000012 /* PCLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000012 /* PCLog.swift */; };
+		BB2000000000000000000100 /* LanguageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000100 /* LanguageService.swift */; };
+		BB2000000000000000000101 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000101 /* L10n.swift */; };
 		BB2000000000000000000099 /* AudioBypassTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000099 /* AudioBypassTest.swift */; };
 		BD75E7E5620A8FF0A868E9F0 /* libPods-PhoneClaw.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 4F4ACB3F4531FF61E0AADA07 /* libPods-PhoneClaw.a */; };
 		BE6E6C928537BCC4DBC975E9 /* (null) in Sources */ = {isa = PBXBuildFile; };
@@ -246,6 +248,8 @@
 		BB1000000000000000000010 /* gemma-4-E2B-it.litertlm */ = {isa = PBXFileReference; lastKnownFileType = file; name = "gemma-4-E2B-it.litertlm"; path = "Models/gemma-4-E2B-it.litertlm"; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000011 /* gemma-4-E4B-it.litertlm */ = {isa = PBXFileReference; lastKnownFileType = file; name = "gemma-4-E4B-it.litertlm"; path = "Models/gemma-4-E4B-it.litertlm"; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000012 /* PCLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PCLog.swift; path = Shared/PCLog.swift; sourceTree = SOURCE_ROOT; };
+		BB1000000000000000000100 /* LanguageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LanguageService.swift; path = Shared/LanguageService.swift; sourceTree = SOURCE_ROOT; };
+		BB1000000000000000000101 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = L10n.swift; path = Shared/L10n.swift; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000099 /* AudioBypassTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBypassTest.swift; sourceTree = "<group>"; };
 		C1A2B3D4E5F607182930A1B3 /* SkillLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillLoader.swift; sourceTree = "<group>"; };
 		C1A2B3D4E5F607182930A1C3 /* SkillRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillRegistry.swift; sourceTree = "<group>"; };
@@ -505,6 +509,8 @@
 				9C503EC6B19AD0CF5515B98E /* LiveComponentTest.swift */,
 				094A760C8A6DFD5E317AF5B8 /* LiveMetrics.swift */,
 				BB1000000000000000000012 /* PCLog.swift */,
+				BB1000000000000000000100 /* LanguageService.swift */,
+				BB1000000000000000000101 /* L10n.swift */,
 				DAF684F9A04FAEE76440F69C /* OrbAudioAnalyser.swift */,
 				CEA10A9D8F9AB4A2764A1A13 /* SherpaOnnx.swift */,
 				F06A8F86444AB26C7373919B /* TTSService.swift */,
@@ -868,6 +874,8 @@
 				BB2000000000000000000008 /* LiteRTCatalog.swift in Sources */,
 				BB2000000000000000000009 /* LiteRTModelStore.swift in Sources */,
 				BB2000000000000000000012 /* PCLog.swift in Sources */,
+				BB2000000000000000000100 /* LanguageService.swift in Sources */,
+				BB2000000000000000000101 /* L10n.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
