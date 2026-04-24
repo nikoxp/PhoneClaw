@@ -67,8 +67,9 @@ final class LiteRTModelStore: ModelInstaller {
             return
         }
 
+        let initialProgress = await initialDownloadProgress(for: model)
         installStates[modelID] = .downloading(completedFiles: 0, totalFiles: 1, currentFile: model.fileName)
-        downloadProgress[modelID] = DownloadProgress()
+        downloadProgress[modelID] = initialProgress
 
         let task = Task { [weak self] in
             guard let self else { throw CancellationError() }
@@ -121,6 +122,22 @@ final class LiteRTModelStore: ModelInstaller {
             throw LiteRTDownloadError.invalidResponse
         }
         try await validateDownloadedFile(model: model, at: path)
+    }
+
+    private func initialDownloadProgress(for model: ModelDescriptor) async -> DownloadProgress {
+        let fallbackTotal = model.expectedFileSize > 0 ? model.expectedFileSize : nil
+        guard let state = try? await downloadManifestStore().resumeState(for: model.id),
+              state.downloadedBytes > 0 else {
+            return DownloadProgress(totalBytes: fallbackTotal, currentFile: model.fileName)
+        }
+
+        resumableModelIDs.insert(model.id)
+        return DownloadProgress(
+            bytesReceived: state.downloadedBytes,
+            totalBytes: state.totalBytes ?? fallbackTotal,
+            bytesPerSecond: nil,
+            currentFile: model.fileName
+        )
     }
 
     /// 根据 URL host 返回镜像名称

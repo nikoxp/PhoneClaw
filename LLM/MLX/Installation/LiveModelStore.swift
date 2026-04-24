@@ -113,8 +113,9 @@ final class LiveModelStore {
             }
 
             let plans = try await LiveDownloadPlanner.makePlans(for: missingAssets)
+            let seededSnapshots = await initialResumeSnapshots(for: plans)
             await MainActor.run {
-                self.configureAggregate(plans)
+                self.configureAggregate(plans, seededSnapshots: seededSnapshots)
             }
 
             for plan in plans {
@@ -176,18 +177,14 @@ final class LiveModelStore {
         }
     }
 
-    private func configureAggregate(_ plans: [LiveAssetDownloadPlan]) {
+    private func configureAggregate(
+        _ plans: [LiveAssetDownloadPlan],
+        seededSnapshots: [String: DownloadProgressSnapshot]
+    ) {
         activePlans = Dictionary(uniqueKeysWithValues: plans.map { ($0.liveAsset.id, $0) })
-        progressSnapshots = [:]
-        resumableAssetCount = 0
-        let totalFiles = plans.reduce(0) { $0 + $1.files.count }
-        installState = .downloading(completedFiles: 0, totalFiles: totalFiles, currentFile: "")
-        downloadMetrics = ModelDownloadMetrics(
-            bytesReceived: 0,
-            totalBytes: aggregateTotalBytes(),
-            bytesPerSecond: nil,
-            sourceLabel: nil
-        )
+        progressSnapshots = seededSnapshots
+        resumableAssetCount = seededSnapshots.count
+        applyAggregateProgress(activeSnapshot: nil)
     }
 
     @MainActor
@@ -239,6 +236,32 @@ final class LiveModelStore {
             total += bytes
         }
         return total
+    }
+
+    private func initialResumeSnapshots(
+        for plans: [LiveAssetDownloadPlan]
+    ) async -> [String: DownloadProgressSnapshot] {
+        var snapshots: [String: DownloadProgressSnapshot] = [:]
+        for plan in plans {
+            guard let state = try? await manifestStore().resumeState(for: plan.liveAsset.id),
+                  state.downloadedBytes > 0 else {
+                continue
+            }
+
+            snapshots[plan.liveAsset.id] = DownloadProgressSnapshot(
+                assetID: plan.liveAsset.id,
+                completedFileCount: 0,
+                totalFileCount: plan.files.count,
+                downloadedBytes: state.downloadedBytes,
+                totalBytes: state.totalBytes ?? plan.totalBytes,
+                bytesPerSecond: nil,
+                activeFilePath: nil,
+                activeSourceLabel: nil,
+                phase: .paused,
+                updatedAt: Date()
+            )
+        }
+        return snapshots
     }
 
     private func refreshResumableStates() {
