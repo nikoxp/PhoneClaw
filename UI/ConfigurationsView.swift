@@ -682,8 +682,9 @@ struct ConfigurationsView: View {
         totalFiles: Int
     ) -> some View {
         let safeTotal = max(totalFiles, 1)
-        let value = Double(min(completedFiles, safeTotal))
         let metrics = engine.installer.downloadProgress[modelID]
+        let activeFileFraction = metrics?.fractionCompleted.map { min(1, max(0, $0)) } ?? 0
+        let value = min(Double(safeTotal), Double(min(completedFiles, safeTotal)) + activeFileFraction)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {

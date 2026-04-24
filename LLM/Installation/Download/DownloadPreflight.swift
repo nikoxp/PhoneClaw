@@ -2,7 +2,16 @@ import Foundation
 
 enum DownloadPreflight: Sendable {
     static func availableCapacity(for directory: URL) throws -> Int64? {
-        let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        let values = try directory.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey,
+            .volumeAvailableCapacityKey,
+        ])
+        if let important = values.volumeAvailableCapacityForImportantUsage, important > 0 {
+            return important
+        }
+        if let general = values.volumeAvailableCapacity, general > 0 {
+            return Int64(general)
+        }
         return values.volumeAvailableCapacityForImportantUsage
     }
 

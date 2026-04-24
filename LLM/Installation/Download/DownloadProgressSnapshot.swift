@@ -6,6 +6,7 @@ struct DownloadProgressSnapshot: Codable, Equatable, Sendable {
     let totalFileCount: Int
     let downloadedBytes: Int64
     let totalBytes: Int64?
+    let bytesPerSecond: Double?
     let activeFilePath: String?
     let activeSourceLabel: String?
     let phase: DownloadProgressPhase
@@ -19,6 +20,10 @@ struct DownloadProgressSnapshot: Codable, Equatable, Sendable {
     var fileFraction: Double {
         guard totalFileCount > 0 else { return 0 }
         return min(1, max(0, Double(completedFileCount) / Double(totalFileCount)))
+    }
+
+    var combinedFraction: Double? {
+        byteFraction ?? fileFraction
     }
 }
 

@@ -5,12 +5,26 @@ struct DownloadAsset: Equatable, Identifiable, Sendable {
     let displayName: String
     let destinationDirectory: URL
     let files: [DownloadFile]
+
+    init(id: String, displayName: String, destinationDirectory: URL, files: [DownloadFile]) {
+        precondition(Self.isValidID(id), "DownloadAsset.id may only contain letters, digits, '.', '_', or '-'")
+        self.id = id
+        self.displayName = displayName
+        self.destinationDirectory = destinationDirectory
+        self.files = files
+    }
+
+    static func isValidID(_ id: String) -> Bool {
+        guard !id.isEmpty else { return false }
+        return id.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil
+    }
 }
 
 struct DownloadFile: Codable, Equatable, Identifiable, Sendable {
     struct Source: Codable, Equatable, Sendable {
         let label: String
         let url: URL
+        /// Lower values are tried first. `0` is the default highest priority.
         let priority: Int
 
         init(label: String, url: URL, priority: Int = 0) {

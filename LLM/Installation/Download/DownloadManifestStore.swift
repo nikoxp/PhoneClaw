@@ -30,13 +30,29 @@ actor DownloadManifestStore {
             .appendingPathComponent(Self.manifestFileName, isDirectory: false)
     }
 
+    func partialFileURL(for assetID: String, relativePath: String) throws -> URL {
+        let url = try workspaceDirectory(for: assetID)
+            .appendingPathComponent(relativePath, isDirectory: false)
+            .appendingPathExtension("part")
+        try ensureDirectory(url.deletingLastPathComponent(), excludedFromBackup: true)
+        return url
+    }
+
     func readManifest(for assetID: String) throws -> DownloadManifest? {
         let url = try manifestURL(for: assetID)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
 
         do {
             let data = try Data(contentsOf: url)
-            return try JSONDecoder.downloadManifestDecoder.decode(DownloadManifest.self, from: data)
+            let manifest = try JSONDecoder.downloadManifestDecoder.decode(DownloadManifest.self, from: data)
+            guard manifest.schemaVersion <= DownloadManifest.currentSchemaVersion else {
+                throw DownloadFailure.manifestCorrupt(
+                    "schema v\(manifest.schemaVersion) > v\(DownloadManifest.currentSchemaVersion)"
+                )
+            }
+            return manifest
+        } catch let failure as DownloadFailure {
+            throw failure
         } catch {
             throw DownloadFailure.manifestCorrupt(error.localizedDescription)
         }

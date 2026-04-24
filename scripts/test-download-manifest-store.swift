@@ -19,7 +19,7 @@ struct DownloadManifestStoreTest {
             updatedAt: now
         )
         let manifest = DownloadManifest(
-            assetID: "gemma/4:e2b",
+            assetID: "gemma-4-e2b",
             createdAt: now,
             updatedAt: now,
             files: [

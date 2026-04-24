@@ -3,8 +3,8 @@ import Foundation
 // MARK: - LiteRT Model Store
 //
 // ModelInstaller conformer for .litertlm 单文件模型。
-// 下载使用 URLSession，存储到 Documents/models/<fileName>。
-// 支持多镜像源自动 fallback + 实时速度计算。
+// 下载存储到 Documents/models/<fileName>。
+// 底层使用 ResumableAssetDownloader，partial/manifest 位于 Documents/models/.downloads/<modelID>/。
 
 @Observable
 final class LiteRTModelStore: ModelInstaller {
@@ -14,7 +14,10 @@ final class LiteRTModelStore: ModelInstaller {
     private(set) var installStates: [String: ModelInstallState] = [:]
     private(set) var downloadProgress: [String: DownloadProgress] = [:]
 
-    private var activeTasks: [String: Task<Void, Never>] = [:]
+    private var activeTasks: [String: Task<Void, Error>] = [:]
+
+    @ObservationIgnored
+    private var downloaderStorage: ResumableAssetDownloader?
 
     // MARK: - Paths
 
@@ -33,7 +36,12 @@ final class LiteRTModelStore: ModelInstaller {
             forName: Notification.Name("LiteRTModelCorrupt"),
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] notification in
+            if let modelID = notification.userInfo?["modelID"] as? String {
+                Task { [weak self] in
+                    try? await self?.downloadCoordinator().purge(assetID: modelID)
+                }
+            }
             self?.refreshInstallStates()
         }
     }
@@ -49,196 +57,62 @@ final class LiteRTModelStore: ModelInstaller {
             return
         }
 
+        if let activeTask = activeTasks[modelID] {
+            try await activeTask.value
+            return
+        }
+
         installStates[modelID] = .downloading(completedFiles: 0, totalFiles: 1, currentFile: model.fileName)
         downloadProgress[modelID] = DownloadProgress()
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let task = Task { [weak self] in
-                guard let self else {
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
+        let task = Task { [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.performInstall(model: model)
+        }
+        activeTasks[modelID] = task
 
-                do {
-                    // 确保目录存在
-                    try FileManager.default.createDirectory(
-                        at: self.modelsDirectory,
-                        withIntermediateDirectories: true
-                    )
-
-                    let destURL = self.modelsDirectory.appendingPathComponent(model.fileName)
-                    let tempURL = destURL.appendingPathExtension("partial")
-
-                    // 清理旧的部分下载
-                    try? FileManager.default.removeItem(at: tempURL)
-
-                    // 多镜像源 fallback 下载
-                    try await self.downloadWithFallback(
-                        urls: model.downloadURLs,
-                        tempURL: tempURL,
-                        modelID: modelID,
-                        expectedFileSize: model.expectedFileSize,
-                        fileName: model.fileName
-                    )
-
-                    // 文件大小校验 — 实际大小必须 >= 预期的 90%
-                    let fileAttrs = try FileManager.default.attributesOfItem(atPath: tempURL.path)
-                    let actualSize = (fileAttrs[.size] as? Int64) ?? 0
-                    if model.expectedFileSize > 0, actualSize < model.expectedFileSize * 9 / 10 {
-                        let expectedMB = model.expectedFileSize / 1_000_000
-                        let actualMB = actualSize / 1_000_000
-                        print("[Download] ❌ 文件大小异常: 期望 ~\(expectedMB)MB, 实际 \(actualMB)MB")
-                        try? FileManager.default.removeItem(at: tempURL)
-                        throw LiteRTDownloadError.invalidResponse
-                    }
-
-                    // 移动到最终位置
-                    try? FileManager.default.removeItem(at: destURL)
-                    try FileManager.default.moveItem(at: tempURL, to: destURL)
-
-                    await MainActor.run {
-                        self.installStates[modelID] = .downloaded
-                        self.downloadProgress[modelID] = nil
-                    }
-
-                    continuation.resume()
-                } catch {
-                    if Task.isCancelled {
-                        await MainActor.run {
-                            self.installStates[modelID] = .notInstalled
-                            self.downloadProgress[modelID] = nil
-                        }
-                        continuation.resume(throwing: CancellationError())
-                    } else {
-                        await MainActor.run {
-                            self.installStates[modelID] = .failed(error.localizedDescription)
-                            self.downloadProgress[modelID] = nil
-                        }
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-
-            activeTasks[modelID] = task
+        do {
+            try await task.value
+            activeTasks[modelID] = nil
+            installStates[modelID] = .downloaded
+            downloadProgress[modelID] = nil
+        } catch is CancellationError {
+            activeTasks[modelID] = nil
+            installStates[modelID] = .notInstalled
+            downloadProgress[modelID] = nil
+            throw CancellationError()
+        } catch {
+            activeTasks[modelID] = nil
+            installStates[modelID] = .failed(userVisibleErrorMessage(for: error))
+            downloadProgress[modelID] = nil
+            throw error
         }
     }
 
-    // MARK: - Multi-source Fallback Download
+    private func performInstall(model: ModelDescriptor) async throws {
+        try FileManager.default.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
 
-    /// 依次尝试多个镜像源, 第一个成功即停止. 每个源 HTTP 错误或超时则自动 fallback.
-    private func downloadWithFallback(
-        urls: [URL],
-        tempURL: URL,
-        modelID: String,
-        expectedFileSize: Int64,
-        fileName: String
-    ) async throws {
-        var lastError: Error?
-
-        for (index, url) in urls.enumerated() {
-            let sourceName = mirrorName(for: url)
-            print("[Download] 尝试镜像 \(index + 1)/\(urls.count): \(sourceName)")
-
-            do {
-                try await downloadFromURL(
-                    url: url,
-                    tempURL: tempURL,
-                    modelID: modelID,
-                    expectedFileSize: expectedFileSize,
-                    fileName: fileName,
-                    sourceName: sourceName
+        let asset = DownloadAsset(
+            id: model.id,
+            displayName: model.displayName,
+            destinationDirectory: modelsDirectory,
+            files: [
+                DownloadFile(
+                    relativePath: model.fileName,
+                    expectedSize: model.expectedFileSize > 0 ? model.expectedFileSize : nil,
+                    sources: model.downloadURLs.enumerated().map { index, url in
+                        DownloadFile.Source(label: mirrorName(for: url), url: url, priority: index)
+                    }
                 )
-                print("[Download] ✅ 从 \(sourceName) 下载成功")
-                return // 成功
-            } catch is CancellationError {
-                throw CancellationError() // 用户取消, 不 fallback
-            } catch {
-                lastError = error
-                print("[Download] ❌ \(sourceName) 失败: \(error.localizedDescription)")
-                // 清理失败的部分文件
-                try? FileManager.default.removeItem(at: tempURL)
-                continue // 尝试下一个
-            }
+            ]
+        )
+
+        _ = try await downloadCoordinator().download(asset: asset)
+
+        guard let path = artifactPath(for: model) else {
+            throw LiteRTDownloadError.invalidResponse
         }
-
-        throw lastError ?? LiteRTDownloadError.invalidResponse
-    }
-
-    /// 从单个 URL 下载, 带实时速度计算
-    private func downloadFromURL(
-        url: URL,
-        tempURL: URL,
-        modelID: String,
-        expectedFileSize: Int64,
-        fileName: String,
-        sourceName: String
-    ) async throws {
-        let (asyncBytes, response) = try await URLSession.shared.bytes(from: url)
-
-        // HTTP 状态校验
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200..<300).contains(httpResponse.statusCode) {
-            throw LiteRTDownloadError.httpStatus(httpResponse.statusCode)
-        }
-
-        let totalSize = (response as? HTTPURLResponse)
-            .flatMap { $0.expectedContentLength > 0 ? $0.expectedContentLength : nil }
-            ?? expectedFileSize
-
-        let fileHandle = try FileHandle(forWritingTo: {
-            FileManager.default.createFile(atPath: tempURL.path, contents: nil)
-            return tempURL
-        }())
-        defer { try? fileHandle.close() }
-
-        var bytesReceived: Int64 = 0
-        var buffer = Data()
-        let flushInterval: Int64 = 1024 * 1024 // 1 MB
-
-        // 速度计算
-        let downloadStart = CFAbsoluteTimeGetCurrent()
-        var lastSpeedUpdate = downloadStart
-        var lastSpeedBytes: Int64 = 0
-        var smoothedSpeed: Double = 0
-
-        for try await byte in asyncBytes {
-            buffer.append(byte)
-            bytesReceived += 1
-
-            if Int64(buffer.count) >= flushInterval {
-                fileHandle.write(buffer)
-                buffer.removeAll(keepingCapacity: true)
-
-                // 计算实时速度 (滑动平均)
-                let now = CFAbsoluteTimeGetCurrent()
-                let elapsed = now - lastSpeedUpdate
-                if elapsed > 0.5 {
-                    let instantSpeed = Double(bytesReceived - lastSpeedBytes) / elapsed
-                    smoothedSpeed = smoothedSpeed > 0
-                        ? smoothedSpeed * 0.7 + instantSpeed * 0.3  // EMA 平滑
-                        : instantSpeed
-                    lastSpeedUpdate = now
-                    lastSpeedBytes = bytesReceived
-                }
-
-                await MainActor.run {
-                    self.downloadProgress[modelID] = DownloadProgress(
-                        bytesReceived: bytesReceived,
-                        totalBytes: totalSize,
-                        bytesPerSecond: smoothedSpeed > 0 ? smoothedSpeed : nil,
-                        currentFile: "\(fileName) (\(sourceName))"
-                    )
-                }
-            }
-
-            if Task.isCancelled { throw CancellationError() }
-        }
-
-        // 写入剩余
-        if !buffer.isEmpty {
-            fileHandle.write(buffer)
-        }
-        try fileHandle.close()
+        try validateDownloadedFile(model: model, at: path)
     }
 
     /// 根据 URL host 返回镜像名称
@@ -250,14 +124,106 @@ final class LiteRTModelStore: ModelInstaller {
         return host
     }
 
+    private func validateDownloadedFile(model: ModelDescriptor, at url: URL) throws {
+        let fileAttrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        let actualSize = (fileAttrs[.size] as? Int64) ?? 0
+        if model.expectedFileSize > 0, actualSize < model.expectedFileSize * 9 / 10 {
+            let expectedMB = model.expectedFileSize / 1_000_000
+            let actualMB = actualSize / 1_000_000
+            print("[Download] ❌ 文件大小异常: 期望 ~\(expectedMB)MB, 实际 \(actualMB)MB")
+            try? FileManager.default.removeItem(at: url)
+            Task { try? await downloadCoordinator().purge(assetID: model.id) }
+            throw LiteRTDownloadError.invalidResponse
+        }
+    }
+
+    private func downloadCoordinator() -> ResumableAssetDownloader {
+        if let downloaderStorage {
+            return downloaderStorage
+        }
+        let downloader = ResumableAssetDownloader(
+            manifestStore: DownloadManifestStore(rootDirectory: modelsDirectory),
+            observer: LiteRTDownloadObserver(store: self)
+        )
+        downloaderStorage = downloader
+        return downloader
+    }
+
+    private func userVisibleErrorMessage(for error: Error) -> String {
+        if let failure = error as? DownloadFailure {
+            switch failure {
+            case .httpStatus(let code):
+                return tr("下载失败：HTTP \(code)", "Download failed: HTTP \(code)")
+            case .insufficientDiskSpace(let required, let available):
+                return tr(
+                    "磁盘空间不足：需要 \(formatBytes(required))，可用 \(formatBytes(available))",
+                    "Not enough storage: needs \(formatBytes(required)), available \(formatBytes(available))"
+                )
+            case .validatorMismatch:
+                return tr(
+                    "下载源校验不一致，请重试。",
+                    "Download source validation changed. Please retry."
+                )
+            case .manifestCorrupt:
+                return tr(
+                    "下载记录损坏，已重新开始下载。",
+                    "Download record was corrupt and has been restarted."
+                )
+            case .cancelled:
+                return tr("下载已取消", "Download cancelled")
+            case .invalidURL, .invalidResponse, .fileSystem:
+                return tr(
+                    "下载失败，请检查网络后重试。",
+                    "Download failed. Check your network and retry."
+                )
+            }
+        }
+        return error.localizedDescription
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useGB, .useMB, .useKB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    @MainActor
+    fileprivate func applyDownloadProgress(_ snapshot: DownloadProgressSnapshot) {
+        let currentFile: String?
+        if let activeFilePath = snapshot.activeFilePath {
+            if let activeSourceLabel = snapshot.activeSourceLabel {
+                currentFile = "\(activeFilePath) (\(activeSourceLabel))"
+            } else {
+                currentFile = activeFilePath
+            }
+        } else {
+            currentFile = nil
+        }
+
+        installStates[snapshot.assetID] = .downloading(
+            completedFiles: snapshot.completedFileCount,
+            totalFiles: snapshot.totalFileCount,
+            currentFile: currentFile ?? ""
+        )
+        downloadProgress[snapshot.assetID] = DownloadProgress(
+            bytesReceived: snapshot.downloadedBytes,
+            totalBytes: snapshot.totalBytes,
+            bytesPerSecond: snapshot.bytesPerSecond,
+            currentFile: currentFile
+        )
+    }
+
     func remove(model: ModelDescriptor) throws {
         guard let path = artifactPath(for: model) else { return }
         try FileManager.default.removeItem(at: path)
+        Task { try? await downloadCoordinator().purge(assetID: model.id) }
         installStates[model.id] = .notInstalled
     }
 
     func cancelInstall(modelID: String) {
         activeTasks[modelID]?.cancel()
+        Task { await downloadCoordinator().pause(assetID: modelID) }
         activeTasks[modelID] = nil
         installStates[modelID] = .notInstalled
         downloadProgress[modelID] = nil
@@ -291,6 +257,7 @@ final class LiteRTModelStore: ModelInstaller {
                     let actualMB = size / 1_000_000
                     print("[ModelStore] ⚠️ \(model.fileName) 文件不完整 (\(actualMB)MB/\(expectedMB)MB)，已自动清理")
                     try? FileManager.default.removeItem(at: path)
+                    Task { try? await downloadCoordinator().purge(assetID: model.id) }
                     installStates[model.id] = .notInstalled
                 } else {
                     installStates[model.id] = .downloaded
@@ -299,6 +266,47 @@ final class LiteRTModelStore: ModelInstaller {
                 installStates[model.id] = .notInstalled
             }
         }
+    }
+}
+
+private actor LiteRTDownloadObserver: DownloadObserver {
+    weak var store: LiteRTModelStore?
+
+    init(store: LiteRTModelStore) {
+        self.store = store
+    }
+
+    func onProgress(_ snapshot: DownloadProgressSnapshot) async {
+        await store?.applyDownloadProgress(snapshot)
+    }
+
+    func onRetry(
+        assetID: String,
+        filePath: String,
+        source: DownloadFile.Source,
+        attempt: Int,
+        error: DownloadFailure
+    ) async {
+        print("[Download] ❌ \(source.label) attempt \(attempt) failed for \(filePath): \(error)")
+    }
+
+    func onSourceSwitch(
+        assetID: String,
+        filePath: String,
+        from: DownloadFile.Source?,
+        to: DownloadFile.Source,
+        reason: DownloadFailure?
+    ) async {
+        let fromLabel = from?.label ?? "none"
+        if let reason {
+            print("[Download] Switching source for \(filePath): \(fromLabel) → \(to.label), reason=\(reason)")
+        } else {
+            print("[Download] Switching source for \(filePath): \(fromLabel) → \(to.label)")
+        }
+    }
+
+    func onFailure(assetID: String, failure: DownloadFailure) async {
+        print("[Download] ❌ asset \(assetID) failed: \(failure)")
     }
 }
 

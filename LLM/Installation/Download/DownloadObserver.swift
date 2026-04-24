@@ -1,26 +1,26 @@
 import Foundation
 
 protocol DownloadObserver: Sendable {
-    func onProgress(_ snapshot: DownloadProgressSnapshot)
+    func onProgress(_ snapshot: DownloadProgressSnapshot) async
     func onRetry(
         assetID: String,
         filePath: String,
         source: DownloadFile.Source,
         attempt: Int,
         error: DownloadFailure
-    )
+    ) async
     func onSourceSwitch(
         assetID: String,
         filePath: String,
         from: DownloadFile.Source?,
         to: DownloadFile.Source,
         reason: DownloadFailure?
-    )
-    func onFailure(assetID: String, failure: DownloadFailure)
+    ) async
+    func onFailure(assetID: String, failure: DownloadFailure) async
 }
 
 extension DownloadObserver {
-    func onProgress(_ snapshot: DownloadProgressSnapshot) {}
+    func onProgress(_ snapshot: DownloadProgressSnapshot) async {}
 
     func onRetry(
         assetID: String,
@@ -28,7 +28,7 @@ extension DownloadObserver {
         source: DownloadFile.Source,
         attempt: Int,
         error: DownloadFailure
-    ) {}
+    ) async {}
 
     func onSourceSwitch(
         assetID: String,
@@ -36,9 +36,9 @@ extension DownloadObserver {
         from: DownloadFile.Source?,
         to: DownloadFile.Source,
         reason: DownloadFailure?
-    ) {}
+    ) async {}
 
-    func onFailure(assetID: String, failure: DownloadFailure) {}
+    func onFailure(assetID: String, failure: DownloadFailure) async {}
 }
 
 struct NoopDownloadObserver: DownloadObserver {}
