@@ -27,6 +27,12 @@
 
 PhoneClaw 是一个运行在 iPhone 上的本地 AI Agent。它使用 Gemma 4 在设备端完成推理，不依赖云端，不上传聊天内容。
 
+## 2026-04-23 更新
+
+- 发布 v1.2.2 — 新增可选择 GPU 或 CPU 进行推理的功能，在配置页自由切换后端；默认 CPU 推理，兼容 Sideloadly 签名 App 的内存上限。
+- ⚠️ **Sideloadly 签名 IPA 使用建议**：受签名软件内存限制，**E4B 模型只能用 CPU 推理**（选 GPU 会报错），建议直接使用 **E2B 模型**，功能完备且更稳定。
+- 💡 **有条件的用户推荐用 Xcode 自行编译安装**：Xcode 开发签不受签名软件内存限制，可以 E2B / E4B + GPU 全开，性能最佳。[下载地址](https://github.com/kellyvv/PhoneClaw/releases/tag/v1.2.2)
+
 ## 2026-04-20 更新
 
 - 发布未签名 IPA，可通过 [Sideloadly](https://sideloadly.io/) 签名安装到 iPhone，无需 Xcode 和 Mac 开发环境。[下载地址](https://github.com/kellyvv/PhoneClaw/releases/tag/v1.1.0)
