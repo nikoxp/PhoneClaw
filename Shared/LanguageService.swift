@@ -82,7 +82,8 @@ final class LanguageService {
         let resolved: AppLanguage
         switch raw {
         case .auto:
-            let isZh = Locale.preferredLanguages.contains { $0.hasPrefix("zh") }
+            // 只看首选语言, 不用 `contains`: 用户主语言英文但备用语言有中文时, 应保持英文。
+            let isZh = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
             resolved = isZh ? .zhHans : .en
         case .zhHans, .en:
             resolved = raw

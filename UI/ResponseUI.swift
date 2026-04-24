@@ -246,16 +246,19 @@ struct SkillCardView: View {
                 Rectangle().fill(Theme.borderSubtle).frame(height: 1)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    stepRow(label: "识别能力: \(card.skillName)",
+                    stepRow(label: tr("识别能力: \(card.skillName)",
+                                      "Detect skill: \(card.skillName)"),
                             done: currentStep > 0,
                             active: currentStep == 0)
-                    stepRow(label: "加载 Skill 指令",
+                    stepRow(label: tr("加载 Skill 指令", "Load skill instructions"),
                             done: currentStep > 1,
                             active: currentStep == 1)
-                    stepRow(label: card.toolName != nil ? "执行 \(card.toolName!)" : "执行工具",
+                    stepRow(label: card.toolName != nil
+                                   ? tr("执行 \(card.toolName!)", "Run \(card.toolName!)")
+                                   : tr("执行工具", "Run tool"),
                             done: currentStep > 2,
                             active: currentStep == 2)
-                    stepRow(label: "生成回复",
+                    stepRow(label: tr("生成回复", "Generate reply"),
                             done: isSkillDone,
                             active: false)
                 }
