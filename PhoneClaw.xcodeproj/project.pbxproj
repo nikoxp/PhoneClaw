@@ -131,6 +131,7 @@
 		BB2000000000000000000099 /* AudioBypassTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000099 /* AudioBypassTest.swift */; };
 		BB2000000000000000000100 /* LanguageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000100 /* LanguageService.swift */; };
 		BB2000000000000000000101 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000101 /* L10n.swift */; };
+		BB2000000000000000000102 /* PromptLocale.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000102 /* PromptLocale.swift */; };
 		B1A2C3D4E5F607182930C002 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = B1A2C3D4E5F607182930C000 /* InfoPlist.strings */; };
 		BD75E7E5620A8FF0A868E9F0 /* libPods-PhoneClaw.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 4F4ACB3F4531FF61E0AADA07 /* libPods-PhoneClaw.a */; };
 		BE6E6C928537BCC4DBC975E9 /* (null) in Sources */ = {isa = PBXBuildFile; };
@@ -253,6 +254,7 @@
 		BB1000000000000000000099 /* AudioBypassTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBypassTest.swift; sourceTree = "<group>"; };
 		BB1000000000000000000100 /* LanguageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LanguageService.swift; path = Shared/LanguageService.swift; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000101 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = L10n.swift; path = Shared/L10n.swift; sourceTree = SOURCE_ROOT; };
+		BB1000000000000000000102 /* PromptLocale.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PromptLocale.swift; path = LLM/PromptLocale.swift; sourceTree = SOURCE_ROOT; };
 		C1A2B3D4E5F607182930A1B3 /* SkillLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillLoader.swift; sourceTree = "<group>"; };
 		C1A2B3D4E5F607182930A1C3 /* SkillRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillRegistry.swift; sourceTree = "<group>"; };
 		C3C4D5E6F7081A2B3C52D3E5 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
@@ -513,6 +515,7 @@
 				BB1000000000000000000012 /* PCLog.swift */,
 				BB1000000000000000000100 /* LanguageService.swift */,
 				BB1000000000000000000101 /* L10n.swift */,
+				BB1000000000000000000102 /* PromptLocale.swift */,
 				DAF684F9A04FAEE76440F69C /* OrbAudioAnalyser.swift */,
 				CEA10A9D8F9AB4A2764A1A13 /* SherpaOnnx.swift */,
 				F06A8F86444AB26C7373919B /* TTSService.swift */,
@@ -881,6 +884,7 @@
 				BB2000000000000000000012 /* PCLog.swift in Sources */,
 				BB2000000000000000000100 /* LanguageService.swift in Sources */,
 				BB2000000000000000000101 /* L10n.swift in Sources */,
+				BB2000000000000000000102 /* PromptLocale.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
