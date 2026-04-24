@@ -282,7 +282,7 @@ actor ResumableAssetDownloader {
                 }
                 return file.expectedSize
             }()
-            tracker.update(downloadedBytes: downloadedBytes, expectedBytes: expectedBytes)
+            let bytesPerSecond = tracker.update(downloadedBytes: downloadedBytes, expectedBytes: expectedBytes)
 
             Task {
                 let updated = updatedManifestForProgress(
@@ -302,7 +302,7 @@ actor ResumableAssetDownloader {
                         totalFileCount: asset.files.count,
                         downloadedBytes: completedBytes + downloadedBytes,
                         totalBytes: totalBytes ?? expectedBytes.map { completedBytes + $0 },
-                        bytesPerSecond: nil,
+                        bytesPerSecond: bytesPerSecond,
                         activeFilePath: file.relativePath,
                         activeSourceLabel: source.label,
                         phase: .downloading,
@@ -976,10 +976,15 @@ private final class DownloadProgressAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private var storedDownloadedBytes: Int64
     private var storedExpectedBytes: Int64?
+    private var lastSpeedUpdate: CFAbsoluteTime
+    private var lastSpeedBytes: Int64
+    private var smoothedBytesPerSecond: Double = 0
 
     init(downloadedBytes: Int64, expectedBytes: Int64?) {
         self.storedDownloadedBytes = downloadedBytes
         self.storedExpectedBytes = expectedBytes
+        self.lastSpeedUpdate = CFAbsoluteTimeGetCurrent()
+        self.lastSpeedBytes = downloadedBytes
     }
 
     var downloadedBytes: Int64 {
@@ -994,13 +999,29 @@ private final class DownloadProgressAccumulator: @unchecked Sendable {
         return storedExpectedBytes
     }
 
-    func update(downloadedBytes: Int64, expectedBytes: Int64?) {
+    func update(downloadedBytes: Int64, expectedBytes: Int64?) -> Double? {
         lock.lock()
-        storedDownloadedBytes = max(storedDownloadedBytes, downloadedBytes)
+        let clampedDownloadedBytes = max(storedDownloadedBytes, downloadedBytes)
+        storedDownloadedBytes = clampedDownloadedBytes
         if let expectedBytes {
             storedExpectedBytes = expectedBytes
         }
+        let now = CFAbsoluteTimeGetCurrent()
+        let elapsed = now - lastSpeedUpdate
+        if elapsed > 0.5 {
+            let delta = clampedDownloadedBytes - lastSpeedBytes
+            if delta > 0 {
+                let instantSpeed = Double(delta) / elapsed
+                smoothedBytesPerSecond = smoothedBytesPerSecond > 0
+                    ? smoothedBytesPerSecond * 0.7 + instantSpeed * 0.3
+                    : instantSpeed
+            }
+            lastSpeedUpdate = now
+            lastSpeedBytes = clampedDownloadedBytes
+        }
+        let speed = smoothedBytesPerSecond > 0 ? smoothedBytesPerSecond : nil
         lock.unlock()
+        return speed
     }
 }
 
