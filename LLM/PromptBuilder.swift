@@ -1198,29 +1198,59 @@ struct PromptBuilder {
         currentImageCount: Int = 0
     ) -> String {
         let systemBlock = extractSystemBlock(from: originalPrompt)
-        var resultsBlock = ""
-        for (toolName, result) in toolResults {
-            resultsBlock += "工具 \(toolName) 的执行结果：\(result)\n"
+
+        // 用户可见输出路径 — planner 多工具 final answer. 英文 locale 下整套
+        // user block 必须英文, 否则 planner 链英文用户最终回复被拉回中文。
+        // zh 分支逐行字节相同原文本 (保证 harness 中文路径不 regress)。
+        if LanguageService.shared.current.isChinese {
+            var resultsBlock = ""
+            for (toolName, result) in toolResults {
+                resultsBlock += "工具 \(toolName) 的执行结果：\(result)\n"
+            }
+
+            return systemBlock + extractHistoryBlock(from: originalPrompt) + """
+            <|turn>user
+            用户原始问题：
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+
+            所有工具已执行完成：
+            \(resultsBlock)
+
+            请基于以上所有结果回答用户：
+            - 如果以上结果已经能回答用户问题，直接给出最终回答，不要重复调用已经成功的工具。
+            - 如果还需要继续调用新的工具来补全答案，可以输出一个或多个 `<tool_call>...</tool_call>`。
+            - 不要反问，不要提到工具名、Skill、status、result、arguments 等字段。
+            - 不要输出 Markdown 代码块，也不要输出 JSON、键名、模板或中间步骤。
+            - 不能输出空白。
+            <turn|>
+            <|turn>model
+
+            """
+        } else {
+            var resultsBlock = ""
+            for (toolName, result) in toolResults {
+                resultsBlock += "Result of tool \(toolName): \(result)\n"
+            }
+
+            return systemBlock + extractHistoryBlock(from: originalPrompt) + """
+            <|turn>user
+            Original user question:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+
+            All tools have finished executing:
+            \(resultsBlock)
+
+            Answer the user based on all results above:
+            - If the results already answer the user's question, give the final answer directly; do not re-invoke tools that already succeeded.
+            - If you still need to call new tools to complete the answer, emit one or more `<tool_call>...</tool_call>`.
+            - Do not ask clarifying questions, do not mention tool names, Skill, status, result, arguments, or any other internal field.
+            - Do not output Markdown code blocks, JSON, key names, templates, or intermediate steps.
+            - Do not output empty content.
+            <turn|>
+            <|turn>model
+
+            """
         }
-
-        return systemBlock + extractHistoryBlock(from: originalPrompt) + """
-        <|turn>user
-        用户原始问题：
-        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
-
-        所有工具已执行完成：
-        \(resultsBlock)
-
-        请基于以上所有结果回答用户：
-        - 如果以上结果已经能回答用户问题，直接给出最终回答，不要重复调用已经成功的工具。
-        - 如果还需要继续调用新的工具来补全答案，可以输出一个或多个 `<tool_call>...</tool_call>`。
-        - 不要反问，不要提到工具名、Skill、status、result、arguments 等字段。
-        - 不要输出 Markdown 代码块，也不要输出 JSON、键名、模板或中间步骤。
-        - 不能输出空白。
-        <turn|>
-        <|turn>model
-
-        """
     }
 
     // MARK: - KV Cache Delta Prompt Builders
