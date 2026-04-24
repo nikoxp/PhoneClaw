@@ -165,9 +165,7 @@ struct ConfigurationsView: View {
                 .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
 
-            Text(engine.inference.isLoaded
-                 ? tr("当前已加载：", "Loaded: ") + engine.catalog.modelDisplayName
-                 : engine.inference.statusMessage)
+            Text(modelHeaderText)
                 .font(.subheadline)
                 .foregroundStyle(Theme.textSecondary)
 
@@ -278,6 +276,56 @@ struct ConfigurationsView: View {
         )
     }
 
+    private var modelHeaderText: String {
+        if engine.inference.isLoaded {
+            return tr("当前已加载：", "Loaded: ") + engine.catalog.modelDisplayName
+        }
+
+        guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }) else {
+            return tr("请选择一个模型。", "Select a model.")
+        }
+
+        let state = engine.installer.installState(for: selectedModel.id)
+        switch state {
+        case .notInstalled:
+            if engine.installer.hasResumableDownload(for: selectedModel.id) {
+                return tr(
+                    "可继续下载 \(selectedModel.displayName)",
+                    "Resume \(selectedModel.displayName)"
+                )
+            }
+            return tr(
+                "请先下载 \(selectedModel.displayName)",
+                "Download \(selectedModel.displayName) first"
+            )
+        case .checkingSource:
+            return tr(
+                "准备下载 \(selectedModel.displayName)",
+                "Preparing \(selectedModel.displayName)"
+            )
+        case .downloading:
+            return tr(
+                "正在下载 \(selectedModel.displayName)",
+                "Downloading \(selectedModel.displayName)"
+            )
+        case .downloaded:
+            return tr(
+                "\(selectedModel.displayName) 已下载，点确定加载",
+                "\(selectedModel.displayName) downloaded. Tap OK"
+            )
+        case .bundled:
+            return tr(
+                "\(selectedModel.displayName) 已内置",
+                "\(selectedModel.displayName) bundled"
+            )
+        case .failed:
+            return tr(
+                "\(selectedModel.displayName) 下载失败",
+                "\(selectedModel.displayName) download failed"
+            )
+        }
+    }
+
     // MARK: - 推理 Backend (GPU / CPU)
 
     /// 按 model + backend 实测/估算的 decode tok/s.
@@ -354,7 +402,15 @@ struct ConfigurationsView: View {
                 L10n.Config.language,
                 selection: Binding(
                     get: { LanguageService.shared.selected },
-                    set: { LanguageService.shared.selected = $0 }
+                    set: { newValue in
+                        LanguageService.shared.selected = newValue
+                        // Re-read locale-backed runtime content that is cached outside SwiftUI rendering.
+                        engine.skillRegistry.reloadAll()
+                        engine.loadSystemPrompt()
+                        if !engine.inference.isLoaded {
+                            engine.inference.statusMessage = tr("等待加载模型...", "Waiting to load model...")
+                        }
+                    }
                 )
             ) {
                 ForEach(AppLanguage.allCases, id: \.self) { lang in
@@ -933,9 +989,10 @@ struct ConfigurationsView: View {
         guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }),
               engine.installer.artifactPath(for: selectedModel) != nil else {
             if let missingModel = engine.availableModels.first(where: { $0.id == selectedModelID }) {
-                engine.inference.statusMessage = tr("请先在配置中下载 ", "Please download ")
-                    + missingModel.displayName
-                    + tr(" 模型", " first")
+                engine.inference.statusMessage = tr(
+                    "请先下载 \(missingModel.displayName) 模型。",
+                    "Please download the \(missingModel.displayName) model first."
+                )
             }
             return false
         }
