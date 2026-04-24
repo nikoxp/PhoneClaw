@@ -215,7 +215,7 @@ struct SkillDetailCard: View {
                                             .foregroundStyle(Theme.textSecondary)
                                         if tool.parameters != "无" {
                                             HStack(spacing: 4) {
-                                                Text("参数:")
+                                                Text(tr("参数:", "Parameters:"))
                                                     .foregroundStyle(Theme.textTertiary)
                                                 Text(tool.parameters)
                                                     .foregroundStyle(Theme.textSecondary)

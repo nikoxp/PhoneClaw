@@ -65,7 +65,7 @@ struct AIResponseView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.counterclockwise")
                                 .font(.system(size: 11, weight: .medium))
-                            Text("重新生成")
+                            Text(tr("重新生成", "Regenerate"))
                                 .font(.system(size: 12))
                         }
                         .foregroundStyle(Theme.textTertiary)

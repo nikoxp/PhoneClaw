@@ -316,7 +316,7 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "waveform.circle.fill")
                         .font(.system(size: 16, weight: .semibold))
-                    Text("进入 LIVE")
+                    Text(tr("进入 LIVE", "Enter LIVE"))
                         .font(.system(size: 15, weight: .bold, design: .rounded))
                 }
                 .foregroundStyle(canEnterLiveMode ? Theme.bg : Theme.textTertiary)
@@ -399,7 +399,7 @@ struct ContentView: View {
                     Button {
                         showPhotoPicker = true
                     } label: {
-                        Label("照片", systemImage: "photo")
+                        Label(tr("照片", "Photo"), systemImage: "photo")
                     }
                     #endif
                     Button {
@@ -411,7 +411,7 @@ struct ContentView: View {
                     Button {
                         showFilePicker = true
                     } label: {
-                        Label("文件", systemImage: "doc")
+                        Label(tr("文件", "File"), systemImage: "doc")
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -940,7 +940,7 @@ private struct SessionHistorySheet: View {
                                                 .foregroundStyle(Theme.textPrimary)
                                                 .lineLimit(1)
                                             if session.id == engine.currentSessionID {
-                                                Text("当前")
+                                                Text(tr("当前", "Current"))
                                                     .font(.system(size: 11, weight: .semibold))
                                                     .foregroundStyle(Theme.bg)
                                                     .padding(.horizontal, 6)
@@ -981,7 +981,7 @@ private struct SessionHistorySheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("关闭") {
+                    Button(tr("关闭", "Close")) {
                         dismiss()
                     }
                 }
@@ -991,7 +991,7 @@ private struct SessionHistorySheet: View {
                         engine.startNewSession()
                         dismiss()
                     } label: {
-                        Label("新会话", systemImage: "square.and.pencil")
+                        Label(tr("新会话", "New Chat"), systemImage: "square.and.pencil")
                     }
                 }
             }
@@ -1005,11 +1005,14 @@ private struct SessionHistorySheet: View {
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(Theme.textTertiary)
 
-            Text("还没有历史记录")
+            Text(tr("还没有历史记录", "No chat history yet"))
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
 
-            Text("开始一次新会话后，聊天内容会自动保存在这里。")
+            Text(tr(
+                "开始一次新会话后，聊天内容会自动保存在这里。",
+                "Start a new chat — your messages will be saved here automatically."
+            ))
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
@@ -1018,7 +1021,7 @@ private struct SessionHistorySheet: View {
                 engine.startNewSession()
                 dismiss()
             } label: {
-                Text("开始新会话")
+                Text(tr("开始新会话", "Start New Chat"))
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.bg)
                     .padding(.horizontal, 16)
@@ -1065,7 +1068,7 @@ struct UserBubble: View {
                             Button {
                                 UIPasteboard.general.string = text
                             } label: {
-                                Label("复制", systemImage: "doc.on.doc")
+                                Label(tr("复制", "Copy"), systemImage: "doc.on.doc")
                             }
                         }
                 }

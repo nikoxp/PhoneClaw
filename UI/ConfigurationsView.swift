@@ -190,12 +190,18 @@ struct ConfigurationsView: View {
                                 // 模型定位提示 — 用户通常只装一个, 不做"请切换 X" 的无效建议,
                                 // 直接声明各自能力边界, 让用户基于场景选一个。
                                 if model.id.contains("e2b") {
-                                    Text("轻量款 · 聊天 / 翻译 / 单轮查询。多轮工具对话能力有限。")
+                                    Text(tr(
+                                        "轻量款 · 聊天 / 翻译 / 单轮查询。多轮工具对话能力有限。",
+                                        "Lightweight · chat / translate / single-turn queries. Limited multi-turn tool use."
+                                    ))
                                         .font(.caption2)
                                         .foregroundStyle(Theme.textTertiary)
                                         .padding(.top, 2)
                                 } else if model.id.contains("e4b") {
-                                    Text("完整款 · 多轮工具对话 + 复杂 agent 能力。更吃存储。")
+                                    Text(tr(
+                                        "完整款 · 多轮工具对话 + 复杂 agent 能力。更吃存储。",
+                                        "Full · multi-turn tool use + complex agent. Uses more storage."
+                                    ))
                                         .font(.caption2)
                                         .foregroundStyle(Theme.textTertiary)
                                         .padding(.top, 2)
