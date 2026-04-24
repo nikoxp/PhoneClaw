@@ -265,14 +265,17 @@ struct PromptBuilder {
         /// 构造紧凑 schema. tools 是 ToolRegistry 里这个 SKILL 注册的 RegisteredTool 列表.
         static func makeCompactSchema(skillName: String, tools: [(name: String, description: String, parameters: String, requiredParameters: [String])]) -> String {
             if tools.isEmpty {
-                return "（content-type SKILL, 无 tool, 按 SKILL 指令直接生成文本结果）"
+                return tr(
+                    "（content-type SKILL, 无 tool, 按 SKILL 指令直接生成文本结果）",
+                    "(content-type SKILL, no tools — generate text result directly per SKILL instructions)"
+                )
             }
             var lines: [String] = []
             for t in tools {
                 lines.append("- `\(t.name)`: \(t.description)")
-                lines.append("  参数: \(t.parameters)")
+                lines.append("  \(tr("参数", "Parameters")): \(t.parameters)")
                 if !t.requiredParameters.isEmpty {
-                    lines.append("  必填: \(t.requiredParameters.joined(separator: ", "))")
+                    lines.append("  \(tr("必填", "Required")): \(t.requiredParameters.joined(separator: ", "))")
                 }
             }
             return lines.joined(separator: "\n")
@@ -311,7 +314,7 @@ struct PromptBuilder {
         let deviceSkills = tools.filter { $0.type == .device }
         let contentSkills = tools.filter { $0.type == .content }
         func renderList(_ list: [SkillInfo]) -> String {
-            if list.isEmpty { return "（无）\n" }
+            if list.isEmpty { return tr("（无）\n", "(none)\n") }
             return list.map { "- **\($0.name)**: \($0.description)" }.joined(separator: "\n") + "\n"
         }
         let deviceListText = renderList(deviceSkills)
@@ -338,7 +341,10 @@ struct PromptBuilder {
             // SYSPROMPT.md 不含任何占位符时的兜底：只追加技能列表，不追加指令。
             prompt += basePrompt
             if !tools.isEmpty {
-                prompt += "\n\n你拥有以下能力（Skill）：\n\n" + flatListText
+                prompt += tr(
+                    "\n\n你拥有以下能力（Skill）：\n\n",
+                    "\n\nYou have the following abilities (Skills):\n\n"
+                ) + flatListText
             }
         }
 
@@ -703,27 +709,40 @@ struct PromptBuilder {
         // 显式告诉模型当前 skill 有哪些工具可调 (只列名字, 不列 schema —
         // schema 属于 T3 暴露)。空列表时明确说"无工具", 防止模型幻觉编造
         // 不存在的工具名 (例如 "professional_translator")。
+        let isZh = LanguageService.shared.current.isChinese
         let toolBlock: String
         if availableTools.isEmpty {
-            toolBlock = """
+            toolBlock = isZh
+            ? """
             当前 Skill **没有任何可调用的工具**。
             按 Skill 指令直接给最终答案正文文本, 禁止输出 <tool_call>。
             """
+            : """
+            This Skill **has no callable tools**.
+            Follow the Skill instructions and give the final answer directly. Do not emit <tool_call>.
+            """
         } else {
             let listText = availableTools.map { "- `\($0)`" }.joined(separator: "\n")
-            toolBlock = """
+            toolBlock = isZh
+            ? """
             当前 Skill 可调用的工具 (只允许这些名字):
             \(listText)
             如果需要操作, 输出 <tool_call>{"name": "<上面列表中的名字>", "arguments": {...}}</tool_call>。
             其他名字一律视为非法, 不要凭空编造。
             如果不需要工具, 直接给最终答案正文文本。
             """
+            : """
+            Callable tools for this Skill (only these names are allowed):
+            \(listText)
+            If action is needed, emit <tool_call>{"name": "<a name from the list above>", "arguments": {...}}</tool_call>.
+            Any other name is illegal; do not fabricate.
+            If no tools are needed, give the final answer directly.
+            """
         }
 
         let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
-        let systemInstructions = injectIntoSystemBlock(
-            systemBlock,
-            extraInstructions: """
+        let extraInstructions: String = isZh
+            ? """
             对于当前这一个用户问题, 你已经加载了所需的 Skill 指令。不要再次调用 `load_skill`。
 
             已加载的 Skill 指令:
@@ -731,26 +750,53 @@ struct PromptBuilder {
 
             \(toolBlock)
             """
-        )
+            : """
+            For this user question, the required Skill instructions have been loaded. Do not call `load_skill` again.
+
+            Loaded Skill instructions:
+            \(skillInstructions)
+
+            \(toolBlock)
+            """
+        let systemInstructions = injectIntoSystemBlock(systemBlock, extraInstructions: extraInstructions)
 
         var prompt = systemInstructions
         prompt += extractHistoryBlock(from: originalPrompt)
-        prompt += """
-        <|turn>user
-        用户问题:
-        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+        if isZh {
+            prompt += """
+            <|turn>user
+            用户问题:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
 
-        按上面的 Skill 指令处理这个请求。
-        - 不要再次调用 load_skill。
-        - 不要让用户去"打开 skill"或"使用某个能力"。
-        - 不要输出中间思考/状态更新/字段名/JSON 模板/代码块/规划草稿。
-        \(forceResponse
-          ? "你必须输出非空内容: 要么是合法的 <tool_call>...</tool_call>, 要么是最终答案正文。"
-          : "如果不需要工具就直接给最终答案正文; 如果需要工具按上面规定的工具名调用。")
-        <turn|>
-        <|turn>model
+            按上面的 Skill 指令处理这个请求。
+            - 不要再次调用 load_skill。
+            - 不要让用户去"打开 skill"或"使用某个能力"。
+            - 不要输出中间思考/状态更新/字段名/JSON 模板/代码块/规划草稿。
+            \(forceResponse
+              ? "你必须输出非空内容: 要么是合法的 <tool_call>...</tool_call>, 要么是最终答案正文。"
+              : "如果不需要工具就直接给最终答案正文; 如果需要工具按上面规定的工具名调用。")
+            <turn|>
+            <|turn>model
 
-        """
+            """
+        } else {
+            prompt += """
+            <|turn>user
+            User question:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+
+            Handle this request per the Skill instructions above.
+            - Do not call load_skill again.
+            - Do not tell the user to "open a skill" or "use a capability".
+            - Do not output intermediate thoughts, status updates, field names, JSON templates, code blocks, or planning drafts.
+            \(forceResponse
+              ? "You must output non-empty content: either a valid <tool_call>...</tool_call>, or the final answer."
+              : "If no tools are needed, give the final answer directly; if tools are needed, invoke by one of the tool names listed above.")
+            <turn|>
+            <|turn>model
+
+            """
+        }
         return prompt
     }
 
@@ -881,39 +927,70 @@ struct PromptBuilder {
         includeTimeAnchor: Bool = false,
         currentImageCount: Int = 0
     ) -> String {
+        let isZh = LanguageService.shared.current.isChinese
         let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
-        let systemInstructions = injectIntoSystemBlock(
-            systemBlock,
-            extraInstructions: """
+        let extraInstructions: String = isZh
+            ? """
             对于当前这一个用户问题，你已经加载了所需的 Skill 指令。
             不要再次调用 `load_skill`。
 
             已加载的 Skill 指令：
             \(skillInstructions)
             """
-        )
+            : """
+            For this user question, the required Skill instructions have been loaded.
+            Do not call `load_skill` again.
 
-        return systemInstructions + extractHistoryBlock(from: originalPrompt) + """
-        <|turn>user
-        用户问题：
-        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+            Loaded Skill instructions:
+            \(skillInstructions)
+            """
+        let systemInstructions = injectIntoSystemBlock(systemBlock, extraInstructions: extraInstructions)
 
-        你现在只负责为工具 `\(toolName)` 提取 arguments。
-        工具参数说明：
-        \(toolParameters)
+        let userBlock: String = isZh
+            ? """
+            <|turn>user
+            用户问题：
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
 
-        严格遵守以下要求：
-        1. 不要调用工具，不要输出 `<tool_call>`。
-        2. 只输出一个 JSON object，内容就是 arguments 本身。
-        3. 不要输出 Markdown、代码块、解释、字段草稿或多余文字。
-        4. 可选字段如果没有，就直接省略。tool 参数说明里标"可选"的字段不算必填.
-        5. 时间字段必须转换成 ISO 8601，例如 `2026-04-07T20:00:00`。
-        6. 只有用户原话完全没说某个必填参数, 才输出 _needs_clarification 字段+一句具体追问.
-           绝大多数情况应该直接给 arguments, 不要轻易追问. 可选字段缺失绝不追问.
-        <turn|>
-        <|turn>model
+            你现在只负责为工具 `\(toolName)` 提取 arguments。
+            工具参数说明：
+            \(toolParameters)
 
-        """
+            严格遵守以下要求：
+            1. 不要调用工具，不要输出 `<tool_call>`。
+            2. 只输出一个 JSON object，内容就是 arguments 本身。
+            3. 不要输出 Markdown、代码块、解释、字段草稿或多余文字。
+            4. 可选字段如果没有，就直接省略。tool 参数说明里标"可选"的字段不算必填.
+            5. 时间字段必须转换成 ISO 8601，例如 `2026-04-07T20:00:00`。
+            6. 只有用户原话完全没说某个必填参数, 才输出 _needs_clarification 字段+一句具体追问.
+               绝大多数情况应该直接给 arguments, 不要轻易追问. 可选字段缺失绝不追问.
+            <turn|>
+            <|turn>model
+
+            """
+            : """
+            <|turn>user
+            User question:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+
+            Your only job is to extract arguments for tool `\(toolName)`.
+            Parameter spec:
+            \(toolParameters)
+
+            Strictly follow these rules:
+            1. Do not invoke tools; do not emit `<tool_call>`.
+            2. Output ONE JSON object, the arguments themselves.
+            3. Do not output Markdown, code blocks, explanations, field drafts, or extra text.
+            4. Omit optional fields if not present. Fields marked "optional" in the spec are not required.
+            5. Time fields must be converted to ISO 8601, e.g. `2026-04-07T20:00:00`.
+            6. Only if the user's literal words did not provide a required parameter, output a `_needs_clarification` field with one specific follow-up question.
+               In most cases, give the arguments directly; do not ask clarifying questions. Never ask about missing optional fields.
+            <turn|>
+            <|turn>model
+
+            """
+
+        return systemInstructions + extractHistoryBlock(from: originalPrompt) + userBlock
     }
 
     /// 单 Skill + 多工具时，让模型只在允许的工具集合中选择一个工具并抽取 arguments。
@@ -925,44 +1002,80 @@ struct PromptBuilder {
         includeTimeAnchor: Bool = false,
         currentImageCount: Int = 0
     ) -> String {
+        let isZh = LanguageService.shared.current.isChinese
         let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
-        let systemInstructions = injectIntoSystemBlock(
-            systemBlock,
-            extraInstructions: """
+        let extraInstructions: String = isZh
+            ? """
             对于当前这一个用户问题，你已经加载了所需的 Skill 指令。
             不要再次调用 `load_skill`。
 
             已加载的 Skill 指令：
             \(skillInstructions)
             """
-        )
+            : """
+            For this user question, the required Skill instructions have been loaded.
+            Do not call `load_skill` again.
 
-        return systemInstructions + extractHistoryBlock(from: originalPrompt) + """
-        <|turn>user
-        用户问题：
-        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+            Loaded Skill instructions:
+            \(skillInstructions)
+            """
+        let systemInstructions = injectIntoSystemBlock(systemBlock, extraInstructions: extraInstructions)
 
-        你现在只负责两件事：
-        1. 在下面允许的工具里选择最合适的一个
-        2. 为该工具提取 arguments
+        let userBlock: String = isZh
+            ? """
+            <|turn>user
+            用户问题：
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
 
-        允许的工具：
-        \(allowedToolsSummary)
+            你现在只负责两件事：
+            1. 在下面允许的工具里选择最合适的一个
+            2. 为该工具提取 arguments
 
-        严格遵守以下要求：
-        1. 不要调用工具，不要输出 `<tool_call>`。
-        2. 只输出一个 JSON object，格式必须是：
-           {"name":"工具名","arguments":{"参数名":"参数值"}}
-        3. `name` 必须是上面允许的工具之一。
-        4. `arguments` 里只保留当前工具需要的参数；没有的可选参数直接省略。
-        5. 不要输出 Markdown、代码块、解释、草稿或多余文字。
-        6. 时间字段必须转换成 ISO 8601，例如 `2026-04-07T20:00:00`。
-        7. 只有用户原话完全没说某个执行必需的信息, 才输出 _needs_clarification 字段+一句具体追问.
-           绝大多数情况直接给 name+arguments, 不要轻易追问.
-        <turn|>
-        <|turn>model
+            允许的工具：
+            \(allowedToolsSummary)
 
-        """
+            严格遵守以下要求：
+            1. 不要调用工具，不要输出 `<tool_call>`。
+            2. 只输出一个 JSON object，格式必须是：
+               {"name":"工具名","arguments":{"参数名":"参数值"}}
+            3. `name` 必须是上面允许的工具之一。
+            4. `arguments` 里只保留当前工具需要的参数；没有的可选参数直接省略。
+            5. 不要输出 Markdown、代码块、解释、草稿或多余文字。
+            6. 时间字段必须转换成 ISO 8601，例如 `2026-04-07T20:00:00`。
+            7. 只有用户原话完全没说某个执行必需的信息, 才输出 _needs_clarification 字段+一句具体追问.
+               绝大多数情况直接给 name+arguments, 不要轻易追问.
+            <turn|>
+            <|turn>model
+
+            """
+            : """
+            <|turn>user
+            User question:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+
+            You are doing only two things:
+            1. Pick the most appropriate one from the allowed tools below
+            2. Extract arguments for that tool
+
+            Allowed tools:
+            \(allowedToolsSummary)
+
+            Strictly follow these rules:
+            1. Do not invoke tools; do not emit `<tool_call>`.
+            2. Output ONE JSON object, format must be:
+               {"name":"<tool_name>","arguments":{"<param>":"<value>"}}
+            3. `name` must be one of the allowed tools above.
+            4. Keep only the parameters this tool needs in `arguments`; omit missing optional ones.
+            5. Do not output Markdown, code blocks, explanations, drafts, or extra text.
+            6. Time fields must be converted to ISO 8601, e.g. `2026-04-07T20:00:00`.
+            7. Only if the user's literal words omitted something required for execution, output a `_needs_clarification` field with one specific follow-up question.
+               In most cases, give name+arguments directly; do not ask lightly.
+            <turn|>
+            <|turn>model
+
+            """
+
+        return systemInstructions + extractHistoryBlock(from: originalPrompt) + userBlock
     }
 
     // MARK: - Planner v3 Prompt Builders
@@ -974,52 +1087,90 @@ struct PromptBuilder {
         recentContextSummary: String = "",
         currentImageCount: Int = 0
     ) -> String {
+        let isZh = LanguageService.shared.current.isChinese
         let systemBlock = extractSystemBlock(from: originalPrompt)
-        let systemInstructions = injectIntoSystemBlock(
-            systemBlock,
-            extraInstructions: """
+        let extraInstructions: String = isZh
+            ? """
             对于当前这一个用户问题，你现在只负责判断需要哪些 Skill。
             不要调用 `load_skill`，不要输出 `<tool_call>`，不要直接回答用户问题。
 
             可用的 Skill 与工具如下：
             \(availableSkillsSummary)
             """
-        )
+            : """
+            For this user question, your only job is to decide which Skills are needed.
+            Do not call `load_skill`, do not emit `<tool_call>`, do not answer the user directly.
+
+            Available Skills and tools:
+            \(availableSkillsSummary)
+            """
+        let systemInstructions = injectIntoSystemBlock(systemBlock, extraInstructions: extraInstructions)
 
         let recentContextBlock: String
         if recentContextSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             recentContextBlock = ""
         } else {
-            recentContextBlock = """
+            recentContextBlock = isZh
+                ? """
 
-            最近已知的工具结果摘要（可作为当前规划的上下文）：
-            \(recentContextSummary)
+                最近已知的工具结果摘要（可作为当前规划的上下文）：
+                \(recentContextSummary)
+                """
+                : """
+
+                Recent known tool-result summary (as context for planning):
+                \(recentContextSummary)
+                """
+        }
+
+        let userBlock: String = isZh
+            ? """
+            <|turn>user
+            用户问题：
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))\(recentContextBlock)
+
+            请输出一个 JSON object，格式必须是：
+            {
+              "required_skills": ["skill_id_1", "skill_id_2"],
+              "needs_clarification": null
+            }
+
+            严格遵守以下要求:
+            1. 只输出 JSON object,不要输出 Markdown、代码块、解释或多余文字。
+            2. `required_skills` 里的每一项必须严格等于上面"可用的 Skill 与工具"段落中列出的 skill id 字符串本身,不能填该 skill 下属的工具名,不能自己拼接,不能翻译。
+            3. 如果任务需要先获取一个结果、再交给另一个 Skill 继续处理,涉及到的所有 Skill 都要列出来,不要只写最终那一个。
+            4. 如果"最近已知的工具结果摘要"已经提供了部分信息,也要据此补全后续需要的 Skill,不要漏掉。
+            5. 如果用户需求不需要任何 Skill,返回空数组 `[]`。
+            6. 如果完全无法判断, 返回 required_skills 为空数组, 同时把 needs_clarification 字段
+               填成一句具体追问 (用一句中文陈述需要追问什么, 不要复读本规则的字面文本).
+            <turn|>
+            <|turn>model
+
             """
-        }
+            : """
+            <|turn>user
+            User question:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))\(recentContextBlock)
 
-        return systemInstructions + extractHistoryBlock(from: originalPrompt) + """
-        <|turn>user
-        用户问题：
-        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))\(recentContextBlock)
+            Output ONE JSON object, format must be:
+            {
+              "required_skills": ["skill_id_1", "skill_id_2"],
+              "needs_clarification": null
+            }
 
-        请输出一个 JSON object，格式必须是：
-        {
-          "required_skills": ["skill_id_1", "skill_id_2"],
-          "needs_clarification": null
-        }
+            Strictly follow these rules:
+            1. Output only the JSON object — no Markdown, no code blocks, no explanations, no extra text.
+            2. Each item in `required_skills` must be exactly one of the skill id strings listed under "Available Skills and tools" above — not a tool name, not concatenated, not translated.
+            3. If the task requires first getting a result and then passing it to another Skill, list ALL involved Skills, not just the final one.
+            4. If the "Recent known tool-result summary" already provides partial info, plan the remaining Skills accordingly; do not skip them.
+            5. If the user's needs require no Skill at all, return `[]`.
+            6. If completely unable to decide, return an empty `required_skills` and set `needs_clarification` to one specific English clarification question (one plain English sentence, do not quote these rules).
+            <turn|>
+            <|turn>model
 
-        严格遵守以下要求:
-        1. 只输出 JSON object,不要输出 Markdown、代码块、解释或多余文字。
-        2. `required_skills` 里的每一项必须严格等于上面"可用的 Skill 与工具"段落中列出的 skill id 字符串本身,不能填该 skill 下属的工具名,不能自己拼接,不能翻译。
-        3. 如果任务需要先获取一个结果、再交给另一个 Skill 继续处理,涉及到的所有 Skill 都要列出来,不要只写最终那一个。
-        4. 如果"最近已知的工具结果摘要"已经提供了部分信息,也要据此补全后续需要的 Skill,不要漏掉。
-        5. 如果用户需求不需要任何 Skill,返回空数组 `[]`。
-        6. 如果完全无法判断, 返回 required_skills 为空数组, 同时把 needs_clarification 字段
-           填成一句具体追问 (用一句中文陈述需要追问什么, 不要复读本规则的字面文本).
-        <turn|>
-        <|turn>model
+            """
 
-        """
+        return systemInstructions + extractHistoryBlock(from: originalPrompt) + userBlock
     }
 
     static func buildSkillPlanningPrompt(
@@ -1029,63 +1180,112 @@ struct PromptBuilder {
         recentContextSummary: String = "",
         currentImageCount: Int = 0
     ) -> String {
+        let isZh = LanguageService.shared.current.isChinese
         let systemBlock = extractSystemBlock(from: originalPrompt)
-        let systemInstructions = injectIntoSystemBlock(
-            systemBlock,
-            extraInstructions: """
+        let extraInstructions: String = isZh
+            ? """
             对于当前这一个用户问题，你现在只负责生成完整的执行计划。
             不要调用 `load_skill`，不要输出 `<tool_call>`，不要直接回答用户问题。
 
             本阶段只允许使用以下已选中的 Skill 与工具：
             \(availableSkillsSummary)
             """
-        )
+            : """
+            For this user question, your only job is to produce a full execution plan.
+            Do not call `load_skill`, do not emit `<tool_call>`, do not answer the user directly.
+
+            Only the following already-selected Skills and tools are allowed in this stage:
+            \(availableSkillsSummary)
+            """
+        let systemInstructions = injectIntoSystemBlock(systemBlock, extraInstructions: extraInstructions)
 
         let recentContextBlock: String
         if recentContextSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             recentContextBlock = ""
         } else {
-            recentContextBlock = """
+            recentContextBlock = isZh
+                ? """
 
-            最近已知的工具结果摘要（可作为当前规划的上下文）：
-            \(recentContextSummary)
-            """
+                最近已知的工具结果摘要（可作为当前规划的上下文）：
+                \(recentContextSummary)
+                """
+                : """
+
+                Recent known tool-result summary (as context for planning):
+                \(recentContextSummary)
+                """
         }
 
-        return systemInstructions + extractHistoryBlock(from: originalPrompt) + """
-        <|turn>user
-        用户问题：
-        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))\(recentContextBlock)
+        let userBlock: String = isZh
+            ? """
+            <|turn>user
+            用户问题：
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))\(recentContextBlock)
 
-        请输出一个 JSON object，格式必须是：
-        {
-          "goal": "一句话目标",
-          "steps": [
+            请输出一个 JSON object，格式必须是：
             {
-              "id": "s1",
-              "skill": "skill_id",
-              "tool": "tool-name",
-              "intent": "这一步要做什么",
-              "depends_on": []
+              "goal": "一句话目标",
+              "steps": [
+                {
+                  "id": "s1",
+                  "skill": "skill_id",
+                  "tool": "tool-name",
+                  "intent": "这一步要做什么",
+                  "depends_on": []
+                }
+              ],
+              "needs_clarification": null
             }
-          ],
-          "needs_clarification": null
-        }
 
-        严格遵守以下要求：
-        1. 只输出 JSON object，不要输出 Markdown、代码块、解释或多余文字。
-        2. `skill` 必须是上面给出的 skill id 之一，`tool` 必须是该 skill 允许的工具之一，使用完整工具名。
-        3. step 最多 4 步，按执行顺序排列。每个已选 skill 至少规划一步。
-        4. `depends_on` 里只能引用前面步骤的 id。如果后续步骤需要前面步骤的结果，必须填写依赖。
-        5. 如果不需要任何技能或工具，返回 `steps: []`。
-        6. 如果后续步骤需要的信息可以通过前置步骤获得，或者已经出现在"最近已知的工具结果摘要"里，仍然要先把这些步骤规划出来，不要提前提问。
-        7. 只要 `steps` 里还能放入至少一个可执行步骤，`needs_clarification` 就必须是 null。
-        8. 只有在完全没有任何可行步骤可以获得关键缺失信息时, 才把 steps 留空数组,
-           同时把 needs_clarification 字段填成一句具体追问 (一句中文, 不要复读本规则的字面文本).
-        <turn|>
-        <|turn>model
+            严格遵守以下要求：
+            1. 只输出 JSON object，不要输出 Markdown、代码块、解释或多余文字。
+            2. `skill` 必须是上面给出的 skill id 之一，`tool` 必须是该 skill 允许的工具之一，使用完整工具名。
+            3. step 最多 4 步，按执行顺序排列。每个已选 skill 至少规划一步。
+            4. `depends_on` 里只能引用前面步骤的 id。如果后续步骤需要前面步骤的结果，必须填写依赖。
+            5. 如果不需要任何技能或工具，返回 `steps: []`。
+            6. 如果后续步骤需要的信息可以通过前置步骤获得，或者已经出现在"最近已知的工具结果摘要"里，仍然要先把这些步骤规划出来，不要提前提问。
+            7. 只要 `steps` 里还能放入至少一个可执行步骤，`needs_clarification` 就必须是 null。
+            8. 只有在完全没有任何可行步骤可以获得关键缺失信息时, 才把 steps 留空数组,
+               同时把 needs_clarification 字段填成一句具体追问 (一句中文, 不要复读本规则的字面文本).
+            <turn|>
+            <|turn>model
 
-        """
+            """
+            : """
+            <|turn>user
+            User question:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))\(recentContextBlock)
+
+            Output ONE JSON object, format must be:
+            {
+              "goal": "one-line goal",
+              "steps": [
+                {
+                  "id": "s1",
+                  "skill": "skill_id",
+                  "tool": "tool-name",
+                  "intent": "what this step does",
+                  "depends_on": []
+                }
+              ],
+              "needs_clarification": null
+            }
+
+            Strictly follow these rules:
+            1. Output only the JSON object — no Markdown, no code blocks, no explanations, no extra text.
+            2. `skill` must be one of the skill ids above; `tool` must be one of the allowed tools for that skill, using the full tool name.
+            3. Up to 4 steps, in execution order. Plan at least one step per selected skill.
+            4. `depends_on` may only reference ids of earlier steps. If a step needs results from an earlier one, declare the dependency.
+            5. If no skills or tools are needed, return `steps: []`.
+            6. If info needed later can come from earlier steps or is already in "Recent known tool-result summary", still plan those earlier steps; do not ask prematurely.
+            7. As long as `steps` can contain at least one executable step, `needs_clarification` must be null.
+            8. Only when absolutely no executable step can obtain the key missing info, leave `steps` as an empty array and set `needs_clarification` to one specific English clarification question (one plain English sentence, do not quote these rules).
+            <turn|>
+            <|turn>model
+
+            """
+
+        return systemInstructions + extractHistoryBlock(from: originalPrompt) + userBlock
     }
 
     static func buildPlannedToolArgumentsPrompt(
@@ -1098,49 +1298,84 @@ struct PromptBuilder {
         includeTimeAnchor: Bool = false,
         currentImageCount: Int = 0
     ) -> String {
+        let isZh = LanguageService.shared.current.isChinese
         let systemBlock = extractSystemBlock(from: originalPrompt, includeTimeAnchor: includeTimeAnchor)
-        let systemInstructions = injectIntoSystemBlock(
-            systemBlock,
-            extraInstructions: """
+        let extraInstructions: String = isZh
+            ? """
             对于当前这一个用户问题，你现在只负责为工具提取参数。
             不要调用 `load_skill`，不要输出 `<tool_call>`，不要直接回答用户问题。
             """
-        )
+            : """
+            For this user question, your only job is to extract arguments for a tool.
+            Do not call `load_skill`, do not emit `<tool_call>`, do not answer the user directly.
+            """
+        let systemInstructions = injectIntoSystemBlock(systemBlock, extraInstructions: extraInstructions)
 
         let completedBlock: String
         if completedStepSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             completedBlock = ""
         } else {
-            completedBlock = "已完成步骤摘要：\n\(completedStepSummary)"
+            completedBlock = isZh
+                ? "已完成步骤摘要：\n\(completedStepSummary)"
+                : "Completed steps summary:\n\(completedStepSummary)"
         }
 
-        return systemInstructions + extractHistoryBlock(from: originalPrompt) + """
-        <|turn>user
-        用户问题：
-        \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+        let userBlock: String = isZh
+            ? """
+            <|turn>user
+            用户问题：
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
 
-        当前步骤目标：
-        \(stepIntent)
+            当前步骤目标：
+            \(stepIntent)
 
-        \(completedBlock)
+            \(completedBlock)
 
-        你现在只负责为工具 `\(toolName)` 提取 arguments。
-        工具参数说明：
-        \(toolParameters)
+            你现在只负责为工具 `\(toolName)` 提取 arguments。
+            工具参数说明：
+            \(toolParameters)
 
-        严格遵守以下要求：
-        1. 不要调用工具，不要输出 `<tool_call>`。
-        2. 只输出一个 JSON object，内容就是 arguments 本身。
-        3. 不要输出 Markdown、代码块、解释、字段草稿或多余文字。
-        4. 可选字段如果没有，就直接省略。
-        5. 如果上面的已完成步骤里已经包含当前工具需要的信息，可以直接引用那些结果来补齐参数。
-        6. 时间字段必须转换成 ISO 8601，例如 `2026-04-07T20:00:00`。
-        7. 只有用户原话完全没说某个必填参数 (tool 描述里标"可选"的不算必填),
-           才输出 _needs_clarification 字段+一句具体追问. 绝大多数情况直接给 arguments.
-        <turn|>
-        <|turn>model
+            严格遵守以下要求：
+            1. 不要调用工具，不要输出 `<tool_call>`。
+            2. 只输出一个 JSON object，内容就是 arguments 本身。
+            3. 不要输出 Markdown、代码块、解释、字段草稿或多余文字。
+            4. 可选字段如果没有，就直接省略。
+            5. 如果上面的已完成步骤里已经包含当前工具需要的信息，可以直接引用那些结果来补齐参数。
+            6. 时间字段必须转换成 ISO 8601，例如 `2026-04-07T20:00:00`。
+            7. 只有用户原话完全没说某个必填参数 (tool 描述里标"可选"的不算必填),
+               才输出 _needs_clarification 字段+一句具体追问. 绝大多数情况直接给 arguments.
+            <turn|>
+            <|turn>model
 
-        """
+            """
+            : """
+            <|turn>user
+            User question:
+            \(userQuestion)\(imagePromptSuffix(count: currentImageCount))
+
+            Current step goal:
+            \(stepIntent)
+
+            \(completedBlock)
+
+            Your only job is to extract arguments for tool `\(toolName)`.
+            Parameter spec:
+            \(toolParameters)
+
+            Strictly follow these rules:
+            1. Do not invoke tools; do not emit `<tool_call>`.
+            2. Output ONE JSON object, the arguments themselves.
+            3. Do not output Markdown, code blocks, explanations, field drafts, or extra text.
+            4. Omit optional fields if not present.
+            5. If a prior completed step already has info the current tool needs, reference those results to fill parameters.
+            6. Time fields must be converted to ISO 8601, e.g. `2026-04-07T20:00:00`.
+            7. Only if the user's literal words omitted a required parameter (fields marked "optional" in the tool spec are not required), output a `_needs_clarification` field with one specific follow-up. In most cases, give arguments directly.
+            <turn|>
+            <|turn>model
+
+            """
+
+        return systemInstructions + extractHistoryBlock(from: originalPrompt) + userBlock
     }
 
     /// Planner v3 chained 任务里执行 **content-type SKILL** 一步 (例如 translate).
@@ -1158,6 +1393,7 @@ struct PromptBuilder {
         completedStepSummary: String = "",
         currentImageCount: Int = 0
     ) -> String {
+        let isZh = LanguageService.shared.current.isChinese
         let systemBlock = extractSystemBlock(from: originalPrompt)
 
         // 关键: prior step 结果用三引号包裹明确隔离, 让 SKILL (例如 translate) 按
@@ -1168,7 +1404,8 @@ struct PromptBuilder {
         if completedStepSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             priorResultBlock = ""
         } else {
-            priorResultBlock = """
+            priorResultBlock = isZh
+                ? """
 
                 上游步骤的输出 (这是本步的输入数据):
                 \"\"\"
@@ -1176,24 +1413,51 @@ struct PromptBuilder {
                 \"\"\"
 
                 """
+                : """
+
+                Upstream step output (this is the input for this step):
+                \"\"\"
+                \(completedStepSummary)
+                \"\"\"
+
+                """
         }
 
-        return systemBlock + extractHistoryBlock(from: originalPrompt) + """
-        <|turn>user
-        本步目标 (Skill 任务): \(stepIntent)
-        \(priorResultBlock)
-        按下面 Skill 指令处理上述输入数据 (这一步没有 tool 可调, 直接输出最终文本结果):
+        let userBlock: String = isZh
+            ? """
+            <|turn>user
+            本步目标 (Skill 任务): \(stepIntent)
+            \(priorResultBlock)
+            按下面 Skill 指令处理上述输入数据 (这一步没有 tool 可调, 直接输出最终文本结果):
 
-        \(skillInstructions)
+            \(skillInstructions)
 
-        重要:
-        - 输入数据是上面三引号里的内容, 不是用户原问.
-        - 直接输出最终文本结果, 不复述输入, 不解释过程.
-        - 不要 emit `<tool_call>`, 不要 Markdown 代码块.
-        <turn|>
-        <|turn>model
+            重要:
+            - 输入数据是上面三引号里的内容, 不是用户原问.
+            - 直接输出最终文本结果, 不复述输入, 不解释过程.
+            - 不要 emit `<tool_call>`, 不要 Markdown 代码块.
+            <turn|>
+            <|turn>model
 
-        """
+            """
+            : """
+            <|turn>user
+            Step goal (Skill task): \(stepIntent)
+            \(priorResultBlock)
+            Handle the input data above per the Skill instructions below (no tool is callable this step — output the final text result directly):
+
+            \(skillInstructions)
+
+            Important:
+            - The input data is what's inside the triple-quoted block above, NOT the user's original question.
+            - Output the final text result directly; do not repeat the input, do not explain the process.
+            - Do not emit `<tool_call>`; do not use Markdown code blocks.
+            <turn|>
+            <|turn>model
+
+            """
+
+        return systemBlock + extractHistoryBlock(from: originalPrompt) + userBlock
     }
 
     static func buildMultiToolAnswerPrompt(

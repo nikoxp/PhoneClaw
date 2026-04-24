@@ -315,6 +315,11 @@ extension AgentEngine {
         //   C. validated 给的 clarification == prompt 字面示例 → 用 matched
         //   D. validated.required.count < 2 (真单 skill) → 返回 false (落回单 skill agent)
         //   E. validated.required.count >= 2 → 用 LLM 选的
+        // 历史 zh selection prompt 曾有字面示例 "请说明具体需要什么帮助",
+        // E2B 偶尔直接复读它作为 clarification (= 没真理解用户需求). 当前 zh prompt
+        // 已经不含这句, 但 KV cache 里可能还残留旧模板; 继续保留这个哨兵检测。
+        // 当前 en prompt 没有字面示例, 所以只需要 zh 一个值 — 英文 mode 下
+        // 这个检查始终 false, 不会误伤 (英文 clarification 都会被正常当作真 clar).
         let placeholderClarification = "请说明具体需要什么帮助"
 
         let rawSelection = await streamLLM(prompt: selectionPrompt, images: images)
