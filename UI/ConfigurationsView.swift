@@ -486,7 +486,7 @@ struct ConfigurationsView: View {
         } else {
             byteFraction = nil
         }
-        let combinedFraction = byteFraction.map { ($0 + fileFraction) / 2 } ?? fileFraction
+        let combinedFraction = byteFraction ?? fileFraction
         let value = min(Double(safeTotal), max(0, combinedFraction) * Double(safeTotal))
 
         return VStack(alignment: .leading, spacing: 8) {
