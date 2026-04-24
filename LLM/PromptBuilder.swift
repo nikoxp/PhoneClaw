@@ -496,19 +496,42 @@ struct PromptBuilder {
             clippedSummary = normalizedSummary
         }
 
+        // Decision classifier 的输出标签 (NORMAL_TEXT / IMAGE_TEXT / RE_MULTIMODAL)
+        // 语言无关, 但任务指令要按当前语言给。
+        let systemBody: String
+        let userHeader: String
+        let questionLabel: String
+        if LanguageService.shared.current.isChinese {
+            systemBody = """
+            你只做一个三分类判断。
+            如果用户的新问题和上一张图片无关，输出 NORMAL_TEXT。
+            如果用户的新问题是在追问上一张图片，但仅凭已有文字回答就能继续回答，输出 IMAGE_TEXT。
+            如果用户的新问题必须重新查看上一张图片的视觉细节才能可靠回答，输出 RE_MULTIMODAL。
+            只输出这三个标签中的一个，不要输出任何别的字。
+            """
+            userHeader = "最近一轮与图片相关的助手回答："
+            questionLabel = "用户新问题："
+        } else {
+            systemBody = """
+            You do one 3-way classification only.
+            If the user's new question is unrelated to the previous image, output NORMAL_TEXT.
+            If the user's new question is a follow-up on the previous image but can be answered using only the existing text answer, output IMAGE_TEXT.
+            If the user's new question requires re-examining the visual details of the previous image to answer reliably, output RE_MULTIMODAL.
+            Output only one of these three labels, nothing else.
+            """
+            userHeader = "Most recent assistant answer related to the image:"
+            questionLabel = "User's new question:"
+        }
+
         return """
         <|turn>system
-        你只做一个三分类判断。
-        如果用户的新问题和上一张图片无关，输出 NORMAL_TEXT。
-        如果用户的新问题是在追问上一张图片，但仅凭已有文字回答就能继续回答，输出 IMAGE_TEXT。
-        如果用户的新问题必须重新查看上一张图片的视觉细节才能可靠回答，输出 RE_MULTIMODAL。
-        只输出这三个标签中的一个，不要输出任何别的字。
+        \(systemBody)
         <turn|>
         <|turn>user
-        最近一轮与图片相关的助手回答：
+        \(userHeader)
         \(clippedSummary)
 
-        用户新问题：
+        \(questionLabel)
         \(userQuestion)
         <turn|>
         <|turn>model
@@ -536,27 +559,50 @@ struct PromptBuilder {
         }
         let basePrompt = (systemPrompt ?? defaultSystemPrompt).trimmingCharacters(in: .whitespacesAndNewlines)
         prompt += basePrompt
-        prompt += "\n\n你正在继续回答同一张图片相关的追问。"
-        prompt += "\n你只能基于下面给出的上一轮图片回答继续作答，不要假装重新看到了图片。"
-        prompt += "\n不要要求用户重新上传图片。"
-        prompt += "\n如果用户要求总结、概括、复述或确认，直接基于上一轮图片回答给出整理后的答案。"
-        prompt += "\n如果仅根据上一轮图片回答无法确定，就明确说“仅根据上一轮描述无法确定”。"
-        prompt += "\n直接回答问题，不要复述规则。"
-        prompt += "\n输出 1 到 2 句完整的简体中文句子，必须自然收尾并以中文句号结束，不要只输出半句。"
+        if LanguageService.shared.current.isChinese {
+            prompt += "\n\n你正在继续回答同一张图片相关的追问。"
+            prompt += "\n你只能基于下面给出的上一轮图片回答继续作答，不要假装重新看到了图片。"
+            prompt += "\n不要要求用户重新上传图片。"
+            prompt += "\n如果用户要求总结、概括、复述或确认，直接基于上一轮图片回答给出整理后的答案。"
+            prompt += "\n如果仅根据上一轮图片回答无法确定，就明确说\"仅根据上一轮描述无法确定\"。"
+            prompt += "\n直接回答问题，不要复述规则。"
+            prompt += "\n输出 1 到 2 句完整的简体中文句子，必须自然收尾并以中文句号结束，不要只输出半句。"
+        } else {
+            prompt += "\n\nYou are continuing to answer a follow-up question about the same image."
+            prompt += "\nYou can only continue based on the previous image answer below; do not pretend to see the image again."
+            prompt += "\nDo not ask the user to re-upload the image."
+            prompt += "\nIf the user asks for a summary, paraphrase, restate, or confirmation, directly produce a tidy answer from the previous image response."
+            prompt += "\nIf the previous image answer alone cannot determine the detail, explicitly say \"cannot determine from the previous description alone\"."
+            prompt += "\nAnswer the question directly; do not repeat the rules."
+            prompt += "\nOutput 1 to 2 complete English sentences, ending naturally with a period. Do not output only a partial sentence."
+        }
         if enableThinking {
             prompt += "\n\n" + thinkingLanguageInstruction
         }
         prompt += "\n<turn|>\n"
-        prompt += """
-        <|turn>user
-        上一轮对图片的回答：
-        \(clippedSummary)
+        if LanguageService.shared.current.isChinese {
+            prompt += """
+            <|turn>user
+            上一轮对图片的回答：
+            \(clippedSummary)
 
-        当前追问：
-        \(userMessage)
-        <turn|>
-        <|turn>model
-        """
+            当前追问：
+            \(userMessage)
+            <turn|>
+            <|turn>model
+            """
+        } else {
+            prompt += """
+            <|turn>user
+            Previous image answer:
+            \(clippedSummary)
+
+            Current follow-up:
+            \(userMessage)
+            <turn|>
+            <|turn>model
+            """
+        }
         return prompt
     }
 
@@ -585,29 +631,54 @@ struct PromptBuilder {
         }
         let basePrompt = (systemPrompt ?? defaultSystemPrompt).trimmingCharacters(in: .whitespacesAndNewlines)
         prompt += basePrompt
-        prompt += "\n\n你只负责把一段未说完的图片追问回答，改写成 1 到 2 句完整、自然、简洁的简体中文。"
-        prompt += "\n只能基于给出的上一轮图片回答补全，不要假装重新看到了图片。"
-        prompt += "\n不要要求用户重新上传图片，不要解释规则，不要输出半句。"
-        prompt += "\n严禁输出 <tool_call>、load_skill、JSON 或任何工具调用内容。"
-        prompt += "\n如果信息仍然不足，就明确说“仅根据上一轮图片回答无法确定”。"
-        prompt += "\n最终答案必须自然收尾并以中文句号结束。"
+        if LanguageService.shared.current.isChinese {
+            prompt += "\n\n你只负责把一段未说完的图片追问回答，改写成 1 到 2 句完整、自然、简洁的简体中文。"
+            prompt += "\n只能基于给出的上一轮图片回答补全，不要假装重新看到了图片。"
+            prompt += "\n不要要求用户重新上传图片，不要解释规则，不要输出半句。"
+            prompt += "\n严禁输出 <tool_call>、load_skill、JSON 或任何工具调用内容。"
+            prompt += "\n如果信息仍然不足，就明确说\"仅根据上一轮图片回答无法确定\"。"
+            prompt += "\n最终答案必须自然收尾并以中文句号结束。"
+        } else {
+            prompt += "\n\nYou only rewrite an incomplete image follow-up answer into 1 to 2 complete, natural, concise English sentences."
+            prompt += "\nComplete the answer based only on the previous image answer provided; do not pretend to see the image again."
+            prompt += "\nDo not ask the user to re-upload the image, do not explain rules, do not output a partial sentence."
+            prompt += "\nStrictly do not emit <tool_call>, load_skill, JSON, or any tool invocation content."
+            prompt += "\nIf information is still insufficient, explicitly say \"cannot determine from the previous image answer alone\"."
+            prompt += "\nThe final answer must end naturally with a period."
+        }
         if enableThinking {
             prompt += "\n\n" + thinkingLanguageInstruction
         }
         prompt += "\n<turn|>\n"
-        prompt += """
-        <|turn>user
-        上一轮对图片的回答：
-        \(clippedSummary)
+        if LanguageService.shared.current.isChinese {
+            prompt += """
+            <|turn>user
+            上一轮对图片的回答：
+            \(clippedSummary)
 
-        当前追问：
-        \(userMessage)
+            当前追问：
+            \(userMessage)
 
-        回答草稿（可能未完成）：
-        \(normalizedPartial)
-        <turn|>
-        <|turn>model
-        """
+            回答草稿（可能未完成）：
+            \(normalizedPartial)
+            <turn|>
+            <|turn>model
+            """
+        } else {
+            prompt += """
+            <|turn>user
+            Previous image answer:
+            \(clippedSummary)
+
+            Current follow-up:
+            \(userMessage)
+
+            Answer draft (possibly incomplete):
+            \(normalizedPartial)
+            <turn|>
+            <|turn>model
+            """
+        }
         return prompt
     }
 
