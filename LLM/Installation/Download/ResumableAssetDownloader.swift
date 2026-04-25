@@ -70,7 +70,7 @@ actor ResumableAssetDownloader {
             completedFileCount: completedFiles,
             totalFileCount: asset.files.count,
             downloadedBytes: completedBytes,
-            totalBytes: totalBytes,
+            totalBytes: completedBytes,
             bytesPerSecond: nil,
             activeFilePath: nil,
             activeSourceLabel: nil,
@@ -141,6 +141,9 @@ actor ResumableAssetDownloader {
 
                 if plan.restart {
                     try? fileManager.removeItem(at: partialURL)
+                    if let resumeDataURL = try? await manifestStore.resumeDataURL(for: asset.id, relativePath: file.relativePath) {
+                        try? fileManager.removeItem(at: resumeDataURL)
+                    }
                 }
 
                 let result = try await transfer(
@@ -153,7 +156,8 @@ actor ResumableAssetDownloader {
                     manifest: currentManifest,
                     completedFiles: completedFiles,
                     completedBytes: completedBytes,
-                    totalBytes: totalBytes
+                    totalBytes: totalBytes,
+                    allowsResumeData: !plan.restart
                 )
                 currentManifest = result.manifest
 
@@ -238,7 +242,8 @@ actor ResumableAssetDownloader {
         manifest: DownloadManifest,
         completedFiles: Int,
         completedBytes: Int64,
-        totalBytes: Int64?
+        totalBytes: Int64?,
+        allowsResumeData: Bool = true
     ) async throws -> (
         manifest: DownloadManifest,
         bytesWritten: Int64,
@@ -249,13 +254,18 @@ actor ResumableAssetDownloader {
         let offset = initialOffset
         let resumeDataURL = try await manifestStore.resumeDataURL(for: asset.id, relativePath: file.relativePath)
         let manifestEntry = manifest.files.first { $0.relativePath == file.relativePath }
+        let knownExpectedBytes = manifestEntry?.metadata?.contentLength ?? manifestEntry?.expectedBytes ?? file.expectedSize
         let resumeDataSourceMatches =
             manifestEntry?.selectedSourceLabel == source.label &&
             (manifestEntry?.metadata?.sourceURL == nil || manifestEntry?.metadata?.sourceURL == source.url)
-        let resumeData = offset == 0 && resumeDataSourceMatches ? (try? Data(contentsOf: resumeDataURL)) : nil
+        let resumeData = allowsResumeData && offset == 0 && resumeDataSourceMatches
+            ? (try? Data(contentsOf: resumeDataURL))
+            : nil
         let usingResumeData = resumeData?.isEmpty == false
-        let resumeDataProgressBase = usingResumeData ? max(offset, manifestEntry?.downloadedBytes ?? 0) : 0
-        if offset == 0 && !resumeDataSourceMatches {
+        let resumeDataProgressBase = usingResumeData
+            ? clampedDownloadedBytes(max(offset, manifestEntry?.downloadedBytes ?? 0), expectedBytes: knownExpectedBytes)
+            : 0
+        if offset == 0 && (!allowsResumeData || !resumeDataSourceMatches) {
             try? fileManager.removeItem(at: resumeDataURL)
         }
 
@@ -266,28 +276,43 @@ actor ResumableAssetDownloader {
             }
         }
 
+        let normalizer = BackgroundDownloadProgressNormalizer(
+            usingResumeData: usingResumeData,
+            rangeOffset: offset,
+            resumeBase: resumeDataProgressBase,
+            expectedBytes: knownExpectedBytes
+        )
         let tracker = DownloadProgressAccumulator(
             downloadedBytes: usingResumeData ? resumeDataProgressBase : offset,
-            expectedBytes: file.expectedSize,
-            resumeBase: resumeDataProgressBase
+            expectedBytes: knownExpectedBytes
         )
         let handle = backgroundSession.start(
             request: request,
             resumeData: resumeData
         ) { [observer, manifestStore] bytesWritten, totalBytesExpected in
-            let rawDownloadedBytes = usingResumeData
-                ? bytesWritten
-                : offset + bytesWritten
             let expectedBytes: Int64? = {
                 if totalBytesExpected > 0 {
                     if usingResumeData {
-                        return file.expectedSize ?? max(totalBytesExpected, resumeDataProgressBase + totalBytesExpected)
+                        return expectedBytesForResumeDataProgress(
+                            taskBytesExpected: totalBytesExpected,
+                            resumeBase: resumeDataProgressBase,
+                            declaredExpectedBytes: knownExpectedBytes
+                        )
                     }
                     return offset + totalBytesExpected
                 }
-                return file.expectedSize
+                return knownExpectedBytes
             }()
-            let progress = tracker.update(downloadedBytes: rawDownloadedBytes, expectedBytes: expectedBytes)
+            let normalizedProgress = normalizer.progress(
+                taskBytesWritten: bytesWritten,
+                taskBytesExpected: totalBytesExpected,
+                currentExpectedBytes: expectedBytes
+            )
+            let progress = tracker.update(
+                downloadedBytes: normalizedProgress.downloadedBytes,
+                expectedBytes: expectedBytes,
+                resetBaseline: normalizedProgress.resetBaseline
+            )
             let downloadedBytes = progress.downloadedBytes
             let bytesPerSecond = progress.bytesPerSecond
 
@@ -308,7 +333,12 @@ actor ResumableAssetDownloader {
                         completedFileCount: completedFiles,
                         totalFileCount: asset.files.count,
                         downloadedBytes: completedBytes + downloadedBytes,
-                        totalBytes: totalBytes ?? expectedBytes.map { completedBytes + $0 },
+                        totalBytes: adjustedTotalBytes(
+                            configuredTotalBytes: totalBytes,
+                            completedBytes: completedBytes,
+                            file: file,
+                            expectedBytes: expectedBytes
+                        ),
                         bytesPerSecond: bytesPerSecond,
                         activeFilePath: file.relativePath,
                         activeSourceLabel: source.label,
@@ -359,7 +389,7 @@ actor ResumableAssetDownloader {
         }
 
         let responseMetadata = makeMetadata(from: httpResponse, source: source, offset: usingResumeData ? 0 : offset, fallbackExpectedSize: file.expectedSize)
-        let expectedBytes = tracker.expectedBytes ?? responseMetadata.contentLength ?? file.expectedSize
+        let expectedBytes = responseMetadata.contentLength ?? tracker.expectedBytes ?? file.expectedSize
 
         if offset > 0, !usingResumeData {
             try appendDownloadedFile(temporaryFileURL, to: partialURL)
@@ -370,6 +400,29 @@ actor ResumableAssetDownloader {
         try? fileManager.removeItem(at: temporaryFileURL)
 
         let bytesReceived = fileSize(partialURL)
+        if let sizeMismatch = finalSizeMismatch(bytesReceived, expectedBytes: expectedBytes) {
+            try? fileManager.removeItem(at: partialURL)
+            try? fileManager.removeItem(at: resumeDataURL)
+            let resetManifest = updatedManifest(
+                (try? await manifestStore.readManifest(for: asset.id)) ?? manifest,
+                asset: asset,
+                replacing: DownloadManifestFile(
+                    relativePath: file.relativePath,
+                    state: .pending,
+                    downloadedBytes: 0,
+                    expectedBytes: expectedBytes,
+                    selectedSourceLabel: source.label,
+                    metadata: responseMetadata
+                )
+            )
+            try? await manifestStore.writeManifest(resetManifest, for: asset.id)
+            throw DownloadFailure.validatorMismatch(
+                expected: sizeMismatch.expected,
+                actual: sizeMismatch.actual,
+                field: "file-size"
+            )
+        }
+
         var currentManifest = (try? await manifestStore.readManifest(for: asset.id)) ?? manifest
         currentManifest = try await persistProgress(
             manifest: currentManifest,
@@ -420,7 +473,12 @@ actor ResumableAssetDownloader {
                 completedFileCount: completedFiles,
                 totalFileCount: asset.files.count,
                 downloadedBytes: completedBytes + bytesReceived,
-                totalBytes: totalBytes ?? expectedBytes.map { completedBytes + $0 },
+                totalBytes: adjustedTotalBytes(
+                    configuredTotalBytes: totalBytes,
+                    completedBytes: completedBytes,
+                    file: file,
+                    expectedBytes: expectedBytes
+                ),
                 bytesPerSecond: bytesPerSecond > 0 ? bytesPerSecond : nil,
                 activeFilePath: file.relativePath,
                 activeSourceLabel: source.label,
@@ -440,6 +498,15 @@ actor ResumableAssetDownloader {
     ) async throws -> (offset: Int64, metadata: DownloadFileMetadata?, restart: Bool) {
         let existingBytes = fileSize(partialURL)
         guard existingBytes > 0 else { return (0, nil, false) }
+
+        // 早期 oversized partial 检测: 落盘字节比 expected 还多 → 必然是脏数据
+        // (上一次 bug 导致写超 / 不同源拼接残留 / 手动写错). 直接 restart, 不依赖
+        // 服务器 HEAD 校验 — HF mirror 经 CloudFront 重定向时 HEAD 不一定返回
+        // Content-Length, 拿不到 currentLength 就漏检, 然后 Range: bytes=existing-
+        // 落到服务器上是越界请求 → 416 死循环。
+        if let expected = file.expectedSize, existingBytes > expected {
+            return (0, nil, true)
+        }
 
         guard let entry = manifest.files.first(where: { $0.relativePath == file.relativePath }) else {
             return (existingBytes, nil, false)
@@ -681,6 +748,15 @@ actor ResumableAssetDownloader {
         return (attrs[.size] as? Int64) ?? 0
     }
 
+    private func finalSizeMismatch(_ bytes: Int64, expectedBytes: Int64?) -> (expected: String, actual: String)? {
+        guard let expectedBytes, expectedBytes > 0 else { return nil }
+        let tolerance = progressTolerance(for: expectedBytes)
+        let lowerBound = max(0, expectedBytes - tolerance)
+        let upperBound = expectedBytes + tolerance
+        guard bytes < lowerBound || bytes > upperBound else { return nil }
+        return ("\(lowerBound)...\(upperBound)", "\(bytes)")
+    }
+
     private func downloadFailure(from error: Error) -> DownloadFailure {
         if let failure = error as? DownloadFailure {
             return failure
@@ -699,6 +775,69 @@ actor ResumableAssetDownloader {
             return true
         }
         return false
+    }
+}
+
+private struct NormalizedDownloadProgress: Sendable {
+    let downloadedBytes: Int64
+    let resetBaseline: Bool
+}
+
+private struct BackgroundDownloadProgressNormalizer: Sendable {
+    let usingResumeData: Bool
+    let rangeOffset: Int64
+    let resumeBase: Int64
+    let expectedBytes: Int64?
+
+    func progress(
+        taskBytesWritten: Int64,
+        taskBytesExpected: Int64,
+        currentExpectedBytes: Int64?
+    ) -> NormalizedDownloadProgress {
+        let expectedBytes = currentExpectedBytes ?? self.expectedBytes
+
+        if usingResumeData {
+            let resumeProgress = resumeDataProgress(
+                taskBytesWritten: taskBytesWritten,
+                taskBytesExpected: taskBytesExpected,
+                expectedBytes: expectedBytes
+            )
+            return NormalizedDownloadProgress(
+                downloadedBytes: clampedDownloadedBytes(resumeProgress.downloadedBytes, expectedBytes: expectedBytes),
+                resetBaseline: resumeProgress.resetBaseline
+            )
+        } else {
+            return NormalizedDownloadProgress(
+                downloadedBytes: clampedDownloadedBytes(rangeOffset + taskBytesWritten, expectedBytes: expectedBytes),
+                resetBaseline: false
+            )
+        }
+    }
+
+    private func resumeDataProgress(
+        taskBytesWritten: Int64,
+        taskBytesExpected: Int64,
+        expectedBytes: Int64?
+    ) -> (downloadedBytes: Int64, resetBaseline: Bool) {
+        guard resumeBase > 0 else { return (taskBytesWritten, false) }
+
+        if let expectedBytes, expectedBytes > 0, taskBytesExpected > 0 {
+            let tolerance = progressTolerance(for: expectedBytes)
+
+            if taskBytesExpected >= expectedBytes - tolerance {
+                return (taskBytesWritten, taskBytesWritten < resumeBase)
+            }
+
+            if resumeBase + taskBytesExpected <= expectedBytes + tolerance {
+                return (resumeBase + taskBytesWritten, false)
+            }
+        }
+
+        if taskBytesWritten >= resumeBase {
+            return (taskBytesWritten, false)
+        }
+
+        return (resumeBase + taskBytesWritten, false)
     }
 }
 
@@ -745,10 +884,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
     private var backgroundCompletionHandlers: [String: () -> Void] = [:]
 
     private lazy var session: URLSession = {
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.phoneclaw.app"
-        let configuration = URLSessionConfiguration.background(withIdentifier: "\(bundleID).background-downloads")
-        configuration.sessionSendsLaunchEvents = true
-        configuration.isDiscretionary = false
+        let configuration: URLSessionConfiguration
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            let bundleID = Bundle.main.bundleIdentifier ?? "com.phoneclaw.app"
+            configuration = URLSessionConfiguration.background(withIdentifier: "\(bundleID).background-downloads")
+            configuration.sessionSendsLaunchEvents = true
+            configuration.isDiscretionary = false
+        } else {
+            configuration = .ephemeral
+        }
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 60 * 60 * 12
@@ -981,20 +1125,17 @@ private final class BackgroundDownloadResultBox {
 
 private final class DownloadProgressAccumulator: @unchecked Sendable {
     private let lock = NSLock()
-    private let resumeBase: Int64
     private var storedDownloadedBytes: Int64
     private var storedExpectedBytes: Int64?
     private var lastSpeedUpdate: CFAbsoluteTime
     private var lastSpeedBytes: Int64
     private var smoothedBytesPerSecond: Double = 0
-    private var resumeDataReportsIncrementalBytes: Bool?
 
-    init(downloadedBytes: Int64, expectedBytes: Int64?, resumeBase: Int64 = 0) {
-        self.resumeBase = resumeBase
-        self.storedDownloadedBytes = downloadedBytes
+    init(downloadedBytes: Int64, expectedBytes: Int64?) {
+        self.storedDownloadedBytes = clampedDownloadedBytes(downloadedBytes, expectedBytes: expectedBytes)
         self.storedExpectedBytes = expectedBytes
         self.lastSpeedUpdate = CFAbsoluteTimeGetCurrent()
-        self.lastSpeedBytes = downloadedBytes
+        self.lastSpeedBytes = self.storedDownloadedBytes
     }
 
     var downloadedBytes: Int64 {
@@ -1009,31 +1150,28 @@ private final class DownloadProgressAccumulator: @unchecked Sendable {
         return storedExpectedBytes
     }
 
-    func update(downloadedBytes: Int64, expectedBytes: Int64?) -> (downloadedBytes: Int64, bytesPerSecond: Double?) {
+    func update(
+        downloadedBytes: Int64,
+        expectedBytes: Int64?,
+        resetBaseline: Bool = false
+    ) -> (downloadedBytes: Int64, bytesPerSecond: Double?) {
         lock.lock()
-        let effectiveDownloadedBytes: Int64
-        if resumeBase > 0 {
-            if resumeDataReportsIncrementalBytes == nil && downloadedBytes > 0 {
-                resumeDataReportsIncrementalBytes = downloadedBytes < resumeBase
-            }
-            if resumeDataReportsIncrementalBytes == true {
-                effectiveDownloadedBytes = resumeBase + downloadedBytes
-            } else {
-                effectiveDownloadedBytes = max(resumeBase, downloadedBytes)
-            }
-        } else {
-            effectiveDownloadedBytes = downloadedBytes
-        }
-
-        let clampedDownloadedBytes = max(storedDownloadedBytes, effectiveDownloadedBytes)
-        storedDownloadedBytes = clampedDownloadedBytes
+        let effectiveDownloadedBytes = clampedDownloadedBytes(downloadedBytes, expectedBytes: expectedBytes)
+        let nextDownloadedBytes = resetBaseline
+            ? effectiveDownloadedBytes
+            : max(storedDownloadedBytes, effectiveDownloadedBytes)
+        storedDownloadedBytes = nextDownloadedBytes
         if let expectedBytes {
             storedExpectedBytes = expectedBytes
         }
         let now = CFAbsoluteTimeGetCurrent()
         let elapsed = now - lastSpeedUpdate
-        if elapsed > 0.5 {
-            let delta = clampedDownloadedBytes - lastSpeedBytes
+        if resetBaseline {
+            smoothedBytesPerSecond = 0
+            lastSpeedUpdate = now
+            lastSpeedBytes = nextDownloadedBytes
+        } else if elapsed > 0.5 {
+            let delta = nextDownloadedBytes - lastSpeedBytes
             if delta > 0 {
                 let instantSpeed = Double(delta) / elapsed
                 smoothedBytesPerSecond = smoothedBytesPerSecond > 0
@@ -1041,12 +1179,58 @@ private final class DownloadProgressAccumulator: @unchecked Sendable {
                     : instantSpeed
             }
             lastSpeedUpdate = now
-            lastSpeedBytes = clampedDownloadedBytes
+            lastSpeedBytes = nextDownloadedBytes
         }
         let speed = smoothedBytesPerSecond > 0 ? smoothedBytesPerSecond : nil
         lock.unlock()
-        return (clampedDownloadedBytes, speed)
+        return (nextDownloadedBytes, speed)
     }
+}
+
+private func clampedDownloadedBytes(_ bytes: Int64, expectedBytes: Int64?) -> Int64 {
+    let positiveBytes = max(0, bytes)
+    guard let expectedBytes, expectedBytes > 0 else { return positiveBytes }
+    return min(positiveBytes, expectedBytes)
+}
+
+private func expectedBytesForResumeDataProgress(
+    taskBytesExpected: Int64,
+    resumeBase: Int64,
+    declaredExpectedBytes: Int64?
+) -> Int64 {
+    guard taskBytesExpected > 0 else {
+        return declaredExpectedBytes ?? max(0, resumeBase)
+    }
+
+    guard let declaredExpectedBytes, declaredExpectedBytes > 0, resumeBase > 0 else {
+        return taskBytesExpected
+    }
+
+    let fullTransferDelta = abs(taskBytesExpected - declaredExpectedBytes)
+    let incrementalTransferTotal = resumeBase + taskBytesExpected
+    let incrementalTransferDelta = abs(incrementalTransferTotal - declaredExpectedBytes)
+    return fullTransferDelta <= incrementalTransferDelta
+        ? taskBytesExpected
+        : incrementalTransferTotal
+}
+
+private func adjustedTotalBytes(
+    configuredTotalBytes: Int64?,
+    completedBytes: Int64,
+    file: DownloadFile,
+    expectedBytes: Int64?
+) -> Int64? {
+    guard let expectedBytes, expectedBytes > 0 else {
+        return configuredTotalBytes
+    }
+    guard let configuredTotalBytes, let configuredFileBytes = file.expectedSize, configuredFileBytes > 0 else {
+        return completedBytes + expectedBytes
+    }
+    return max(0, configuredTotalBytes - configuredFileBytes + expectedBytes)
+}
+
+private func progressTolerance(for expectedBytes: Int64) -> Int64 {
+    max(1, min(Int64(1_048_576), expectedBytes / 1000))
 }
 
 private func updatedManifestForProgress(
