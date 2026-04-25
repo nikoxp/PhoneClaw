@@ -18,20 +18,16 @@ struct ConfigurationsView: View {
     @State private var systemPrompt: String = ""
     @State private var permissionStatuses: [AppPermissionKind: AppPermissionStatus] = [:]
     @State private var requestingPermission: AppPermissionKind?
-    @State private var liveDownloader = LiveModelDownloader()
-
-    private var isChineseSystem: Bool {
-        Locale.preferredLanguages.contains { $0.hasPrefix("zh") }
-    }
+    @State private var liveDownloader = LiveModelStore()
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Tab 切换
                 HStack(spacing: 0) {
-                    tabButton(localized("模型设置", "Model Settings"), tag: 0)
-                    tabButton(localized("系统提示词", "System Prompt"), tag: 1)
-                    tabButton(localized("权限", "Permissions"), tag: 2)
+                    tabButton(tr("模型设置", "Model Settings"), tag: 0)
+                    tabButton(tr("系统提示词", "System Prompt"), tag: 1)
+                    tabButton(tr("权限", "Permissions"), tag: 2)
                 }
                 .padding(.horizontal)
 
@@ -54,16 +50,16 @@ struct ConfigurationsView: View {
                     Button {
                         showSkillsManager = true
                     } label: {
-                        Label(localized("Skills", "Skills"), systemImage: "puzzlepiece.extension")
+                        Label(tr("Skills", "Skills"), systemImage: "puzzlepiece.extension")
                             .font(.body.weight(.medium))
                             .foregroundStyle(Theme.textSecondary)
                     }
                     .buttonStyle(.plain)
 
                     Spacer()
-                    Button(localized("取消", "Cancel")) { dismiss() }
+                    Button(tr("取消", "Cancel")) { dismiss() }
                         .foregroundStyle(Theme.textSecondary)
-                    Button(localized("确定", "OK")) {
+                    Button(tr("确定", "OK")) {
                         if applySettings() {
                             dismiss()
                         }
@@ -76,7 +72,7 @@ struct ConfigurationsView: View {
                 }
                 .padding()
             }
-            .navigationTitle(localized("配置", "Configurations"))
+            .navigationTitle(tr("配置", "Configurations"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .background(Theme.bgElevated)
@@ -121,6 +117,7 @@ struct ConfigurationsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 modelSection
                 backendSection
+                languageSection
                 liveModelSection
             }
             .padding()
@@ -142,7 +139,7 @@ struct ConfigurationsView: View {
                         .strokeBorder(Theme.border, lineWidth: 1)
                 )
 
-            Button(localized("恢复默认", "Restore Default")) {
+            Button(tr("恢复默认", "Restore Default")) {
                 systemPrompt = engine.defaultSystemPrompt
             }
             .font(.subheadline)
@@ -164,13 +161,11 @@ struct ConfigurationsView: View {
 
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(localized("模型", "Model"))
+            Text(tr("模型", "Model"))
                 .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
 
-            Text(engine.inference.isLoaded
-                 ? localized("当前已加载：", "Loaded: ") + engine.catalog.modelDisplayName
-                 : engine.inference.statusMessage)
+            Text(modelHeaderText)
                 .font(.subheadline)
                 .foregroundStyle(Theme.textSecondary)
 
@@ -193,12 +188,18 @@ struct ConfigurationsView: View {
                                 // 模型定位提示 — 用户通常只装一个, 不做"请切换 X" 的无效建议,
                                 // 直接声明各自能力边界, 让用户基于场景选一个。
                                 if model.id.contains("e2b") {
-                                    Text("轻量款 · 聊天 / 翻译 / 单轮查询。多轮工具对话能力有限。")
+                                    Text(tr(
+                                        "轻量款 · 聊天 / 翻译 / 单轮查询。多轮工具对话能力有限。",
+                                        "Lightweight · chat / translate / single-turn queries. Limited multi-turn tool use."
+                                    ))
                                         .font(.caption2)
                                         .foregroundStyle(Theme.textTertiary)
                                         .padding(.top, 2)
                                 } else if model.id.contains("e4b") {
-                                    Text("完整款 · 多轮工具对话 + 复杂 agent 能力。更吃存储。")
+                                    Text(tr(
+                                        "完整款 · 多轮工具对话 + 复杂 agent 能力。更吃存储。",
+                                        "Full · multi-turn tool use + complex agent. Uses more storage."
+                                    ))
                                         .font(.caption2)
                                         .foregroundStyle(Theme.textTertiary)
                                         .padding(.top, 2)
@@ -238,7 +239,7 @@ struct ConfigurationsView: View {
                             )
                         }
 
-                        if let detail = modelStateDetail(state) {
+                        if let detail = modelStateDetail(state, modelID: model.id) {
                             Text(detail)
                                 .font(.caption)
                                 .foregroundStyle(state.isFailure ? Theme.accent : Theme.textTertiary)
@@ -275,6 +276,56 @@ struct ConfigurationsView: View {
         )
     }
 
+    private var modelHeaderText: String {
+        if engine.inference.isLoaded {
+            return tr("当前已加载：", "Loaded: ") + engine.catalog.modelDisplayName
+        }
+
+        guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }) else {
+            return tr("请选择一个模型。", "Select a model.")
+        }
+
+        let state = engine.installer.installState(for: selectedModel.id)
+        switch state {
+        case .notInstalled:
+            if engine.installer.hasResumableDownload(for: selectedModel.id) {
+                return tr(
+                    "可继续下载 \(selectedModel.displayName)",
+                    "Resume \(selectedModel.displayName)"
+                )
+            }
+            return tr(
+                "请先下载模型",
+                "Download a model first"
+            )
+        case .checkingSource:
+            return tr(
+                "准备下载 \(selectedModel.displayName)",
+                "Preparing \(selectedModel.displayName)"
+            )
+        case .downloading:
+            return tr(
+                "正在下载 \(selectedModel.displayName)",
+                "Downloading \(selectedModel.displayName)"
+            )
+        case .downloaded:
+            return tr(
+                "\(selectedModel.displayName) 已下载，点确定加载",
+                "\(selectedModel.displayName) downloaded. Tap OK"
+            )
+        case .bundled:
+            return tr(
+                "\(selectedModel.displayName) 已内置",
+                "\(selectedModel.displayName) bundled"
+            )
+        case .failed:
+            return tr(
+                "\(selectedModel.displayName) 下载失败",
+                "\(selectedModel.displayName) download failed"
+            )
+        }
+    }
+
     // MARK: - 推理 Backend (GPU / CPU)
 
     /// 按 model + backend 实测/估算的 decode tok/s.
@@ -282,16 +333,16 @@ struct ConfigurationsView: View {
     /// - E4B: GPU 实测, CPU 按 E2B 比例推算
     private var estimatedSpeedText: String {
         let isE4B = selectedModelID.contains("e4b")
-        let fastLabel = localized("较快", "fast")
-        let slowLabel = localized("较慢", "slower")
+        let fastLabel = tr("较快", "fast")
+        let slowLabel = tr("较慢", "slower")
         switch (preferredBackend, isE4B) {
-        case ("gpu", false): return localized("E2B · 推理速度 ~25 tok/s (\(fastLabel))",
+        case ("gpu", false): return tr("E2B · 推理速度 ~25 tok/s (\(fastLabel))",
                                                "E2B · Inference ~25 tok/s (\(fastLabel))")
-        case ("gpu", true):  return localized("E4B · 推理速度 ~20 tok/s (\(fastLabel))",
+        case ("gpu", true):  return tr("E4B · 推理速度 ~20 tok/s (\(fastLabel))",
                                                "E4B · Inference ~20 tok/s (\(fastLabel))")
-        case ("cpu", false): return localized("E2B · 推理速度 ~8 tok/s (\(slowLabel))",
+        case ("cpu", false): return tr("E2B · 推理速度 ~8 tok/s (\(slowLabel))",
                                                "E2B · Inference ~8 tok/s (\(slowLabel))")
-        case ("cpu", true):  return localized("E4B · 推理速度 ~4 tok/s (\(slowLabel))",
+        case ("cpu", true):  return tr("E4B · 推理速度 ~4 tok/s (\(slowLabel))",
                                                "E4B · Inference ~4 tok/s (\(slowLabel))")
         default:             return ""
         }
@@ -299,11 +350,11 @@ struct ConfigurationsView: View {
 
     private var backendSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(localized("推理后端", "Inference Backend"))
+            Text(tr("推理后端", "Inference Backend"))
                 .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
 
-            Picker(localized("推理后端", "Inference Backend"), selection: $preferredBackend) {
+            Picker(tr("推理后端", "Inference Backend"), selection: $preferredBackend) {
                 Text("GPU (Metal)").tag("gpu")
                 Text("CPU").tag("cpu")
             }
@@ -316,7 +367,7 @@ struct ConfigurationsView: View {
 
             // 始终可见的内存提醒
             Label(
-                localized(
+                tr(
                     "低内存手机建议选 CPU — GPU 占内存较高。",
                     "Low-memory devices: prefer CPU — GPU uses significantly more memory."
                 ),
@@ -326,6 +377,67 @@ struct ConfigurationsView: View {
             .foregroundStyle(Theme.textSecondary)
             .labelStyle(.titleAndIcon)
             .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .background(Theme.bg, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Theme.border, lineWidth: 1)
+        )
+    }
+
+    // MARK: - Language
+
+    /// Language preference picker — Auto (跟随系统) / 中文 / English。
+    /// 读写 `LanguageService.shared.selected`, 绑定是直接的 Binding 封装
+    /// (比 @Bindable + @Observable 的混搭更显式, 也不需要额外 @State 镜像)。
+    /// 切换立即触发 SwiftUI observation, 整个 app 视图重渲染新语言。
+    private var languageSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(L10n.Config.language)
+                .font(.headline)
+                .foregroundStyle(Theme.textPrimary)
+
+            Picker(
+                L10n.Config.language,
+                selection: Binding(
+                    get: { LanguageService.shared.selected },
+                    set: { newValue in
+                        LanguageService.shared.selected = newValue
+                        // Locale 切换的 runtime cascade. @Observable 让视图里 `tr()` 自动重算,
+                        // 但下面这些是 runtime 已经固化过的 resolved 内容, 不会自动重建:
+                        //   1. Registry bundle 层: reloadAll 重读 SKILL.en.md vs SKILL.md
+                        //   2. Engine cache 层: reloadSkills 把 registry 的新 metadata 同步进
+                        //      engine.skillEntries (UI chips 读的是这个数组, 不是 registry)
+                        //   3. SYSPROMPT.md 物理文件: 跑 locale-mismatch 迁移, 重写默认
+                        //   4. 本地 @State systemPrompt: TextEditor 绑的是这个, 不会自动
+                        //      从 engine.config.systemPrompt 同步, 必须手动重拉
+                        //   5. inference.statusMessage: 存的是 tr() 当时的快照 string, 重写
+                        _ = engine.skillRegistry.reloadAll()
+                        engine.reloadSkills()
+                        engine.loadSystemPrompt()
+                        systemPrompt = engine.config.systemPrompt
+                        if !engine.inference.isLoaded {
+                            if let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }),
+                               engine.installer.artifactPath(for: selectedModel) == nil {
+                                engine.inference.statusMessage = tr("请先下载模型", "Download a model first")
+                            } else {
+                                engine.inference.statusMessage = tr("等待加载模型...", "Waiting to load model...")
+                            }
+                        }
+                    }
+                )
+            ) {
+                ForEach(AppLanguage.allCases, id: \.self) { lang in
+                    Text(lang.displayName).tag(lang)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(L10n.Config.languageFooter)
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
         .background(Theme.bg, in: RoundedRectangle(cornerRadius: 16))
@@ -347,10 +459,10 @@ struct ConfigurationsView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(localized("LIVE 语音模型", "LIVE Voice Models"))
+                    Text(tr("LIVE 语音模型", "LIVE Voice Models"))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Theme.textPrimary)
-                    Text(localized(
+                    Text(tr(
                         "LIVE 实时语音模式需要的模型。",
                         "Required for LIVE real-time voice mode."
                     ))
@@ -396,7 +508,9 @@ struct ConfigurationsView: View {
     private var liveModelStateButton: some View {
         switch liveDownloader.installState {
         case .notInstalled:
-            Button(localized("下载", "Download")) {
+            let completedAssets = liveDownloader.completedAssetCount
+            let canResume = completedAssets > 0 || liveDownloader.resumableAssetCount > 0
+            Button(canResume ? tr("继续下载", "Resume") : tr("下载", "Download")) {
                 Task { await liveDownloader.downloadAll() }
             }
             .font(.caption.weight(.semibold))
@@ -405,15 +519,22 @@ struct ConfigurationsView: View {
             .padding(.vertical, 6)
             .background(Theme.accent.opacity(0.15), in: Capsule())
         case .checkingSource:
-            modelBadge(localized("检查中", "Checking"))
+            modelBadge(tr("检查中", "Checking"))
         case .downloading:
             EmptyView()
         case .downloaded:
-            modelBadge(localized("已下载", "Downloaded"), color: Theme.accentGreen)
+            Button(tr("删除", "Delete")) {
+                Task { try? await liveDownloader.removeAll() }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Theme.accent.opacity(0.15), in: Capsule())
         case .bundled:
-            modelBadge(localized("内置", "Bundled"), color: Theme.accentGreen)
+            modelBadge(tr("内置", "Bundled"), color: Theme.accentGreen)
         case .failed:
-            Button(localized("重试", "Retry")) {
+            Button(tr("重试", "Retry")) {
                 Task { await liveDownloader.downloadAll() }
             }
             .font(.caption.weight(.semibold))
@@ -429,13 +550,21 @@ struct ConfigurationsView: View {
         totalFiles: Int
     ) -> some View {
         let safeTotal = max(totalFiles, 1)
-        let value = Double(min(completedFiles, safeTotal))
         let metrics = liveDownloader.downloadMetrics
+        let fileFraction = Double(min(completedFiles, safeTotal)) / Double(safeTotal)
+        let byteFraction: Double?
+        if let metrics, let totalBytes = metrics.totalBytes, totalBytes > 0 {
+            byteFraction = min(1, max(0, Double(metrics.bytesReceived) / Double(totalBytes)))
+        } else {
+            byteFraction = nil
+        }
+        let combinedFraction = byteFraction ?? fileFraction
+        let value = min(Double(safeTotal), max(0, combinedFraction) * Double(safeTotal))
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(localized(
+                    Text(tr(
                         "下载中 \(completedFiles)/\(totalFiles)",
                         "Downloading \(completedFiles)/\(totalFiles)"
                     ))
@@ -453,7 +582,7 @@ struct ConfigurationsView: View {
 
                 Spacer(minLength: 8)
 
-                Button(localized("取消", "Cancel")) {
+                Button(tr("取消", "Cancel")) {
                     liveDownloader.cancelDownload()
                 }
                 .font(.caption.weight(.semibold))
@@ -474,18 +603,50 @@ struct ConfigurationsView: View {
 
     private func liveDownloadMetricsText(_ metrics: ModelDownloadMetrics) -> String {
         let speedText = formattedSpeed(metrics.bytesPerSecond)
+        var result: String
         if let totalBytes = metrics.totalBytes, totalBytes > 0 {
-            return "\(formattedBytes(metrics.bytesReceived)) / \(formattedBytes(totalBytes)) · \(speedText)"
+            result = "\(formattedBytes(metrics.bytesReceived)) / \(formattedBytes(totalBytes))"
+        } else {
+            result = formattedBytes(metrics.bytesReceived)
         }
-        return "\(formattedBytes(metrics.bytesReceived)) · \(speedText)"
+        if !speedText.isEmpty {
+            result += " · \(speedText)"
+        }
+        return result
     }
 
     private func liveStateDetail(_ state: ModelInstallState) -> String? {
         switch state {
         case .notInstalled:
-            return localized("未安装 (~\(LiveModelDefinition.estimatedSizeMB)MB)", "Not installed (~\(LiveModelDefinition.estimatedSizeMB)MB)")
+            let completedAssets = liveDownloader.completedAssetCount
+            let resumableAssets = liveDownloader.resumableAssetCount
+            if completedAssets > 0 || resumableAssets > 0 {
+                let progressText = liveDownloader.downloadMetrics.map(liveDownloadMetricsText)
+                let base: String
+                if completedAssets > 0, resumableAssets > 0 {
+                    base = tr(
+                        "已完成 \(completedAssets)/\(LiveModelDefinition.all.count)，另有 \(resumableAssets) 个可继续下载。",
+                        "\(completedAssets)/\(LiveModelDefinition.all.count) complete, \(resumableAssets) can resume."
+                    )
+                } else if completedAssets > 0 {
+                    base = tr(
+                        "已完成 \(completedAssets)/\(LiveModelDefinition.all.count)，可继续下载。",
+                        "\(completedAssets)/\(LiveModelDefinition.all.count) complete. You can resume downloading."
+                    )
+                } else {
+                    base = tr(
+                        "已有下载进度，可继续下载。",
+                        "Download progress found. You can resume downloading."
+                    )
+                }
+                if let progressText, !progressText.isEmpty {
+                    return "\(base) \(progressText)"
+                }
+                return base
+            }
+            return tr("未安装 (~\(LiveModelDefinition.estimatedSizeMB)MB)", "Not installed (~\(LiveModelDefinition.estimatedSizeMB)MB)")
         case .downloaded:
-            return localized("已下载到手机本地。", "Downloaded to device.")
+            return tr("已下载到手机本地。", "Downloaded to device.")
         case .failed(let msg):
             return msg
         default:
@@ -495,7 +656,7 @@ struct ConfigurationsView: View {
 
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(localized("权限", "Permissions"))
+            Text(tr("权限", "Permissions"))
                 .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
 
@@ -553,8 +714,8 @@ struct ConfigurationsView: View {
             HStack(spacing: 10) {
                 if !status.isGranted {
                     Button(requestingPermission == kind
-                           ? localized("请求中...", "Requesting...")
-                           : localized("请求权限", "Request Access")) {
+                           ? tr("请求中...", "Requesting...")
+                           : tr("请求权限", "Request Access")) {
                         requestPermission(kind)
                     }
                     .disabled(requestingPermission != nil)
@@ -565,7 +726,7 @@ struct ConfigurationsView: View {
                     .background(Theme.accent.opacity(0.15), in: Capsule())
                 }
 
-                Button(localized("去设置", "Open Settings")) {
+                Button(tr("去设置", "Open Settings")) {
                     openAppSettings()
                 }
                 .font(.caption.weight(.semibold))
@@ -582,7 +743,8 @@ struct ConfigurationsView: View {
     private func modelStateControl(for model: ModelDescriptor, state: ModelInstallState) -> some View {
         switch state {
         case .notInstalled:
-            Button(localized("下载", "Download")) {
+            let isResumable = engine.installer.hasResumableDownload(for: model.id)
+            Button(isResumable ? tr("继续下载", "Resume") : tr("下载", "Download")) {
                 selectedModelID = model.id
                 Task {
                     try await engine.installer.install(model: model)
@@ -600,7 +762,7 @@ struct ConfigurationsView: View {
             .padding(.vertical, 6)
             .background(Theme.accent.opacity(0.15), in: Capsule())
         case .checkingSource:
-            modelBadge(localized("检查中", "Checking"))
+            modelBadge(tr("检查中", "Checking"))
         case .downloading(let completedFiles, let totalFiles, _):
             downloadProgressBadge(
                 modelID: model.id,
@@ -608,11 +770,11 @@ struct ConfigurationsView: View {
                 totalFiles: totalFiles
             )
         case .downloaded:
-            modelBadge(localized("已下载", "Downloaded"), color: Theme.accentGreen)
+            modelBadge(tr("已下载", "Downloaded"), color: Theme.accentGreen)
         case .bundled:
-            modelBadge(localized("内置", "Bundled"), color: Theme.accentGreen)
+            modelBadge(tr("内置", "Bundled"), color: Theme.accentGreen)
         case .failed:
-            Button(localized("重试", "Retry")) {
+            Button(tr("重试", "Retry")) {
                 selectedModelID = model.id
                 Task {
                     try await engine.installer.install(model: model)
@@ -641,13 +803,14 @@ struct ConfigurationsView: View {
         totalFiles: Int
     ) -> some View {
         let safeTotal = max(totalFiles, 1)
-        let value = Double(min(completedFiles, safeTotal))
         let metrics = engine.installer.downloadProgress[modelID]
+        let activeFileFraction = metrics?.fractionCompleted.map { min(1, max(0, $0)) } ?? 0
+        let value = min(Double(safeTotal), Double(min(completedFiles, safeTotal)) + activeFileFraction)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(localized(
+                    Text(tr(
                         "下载中 \(completedFiles)/\(totalFiles)",
                         "Downloading \(completedFiles)/\(totalFiles)"
                     ))
@@ -665,7 +828,7 @@ struct ConfigurationsView: View {
 
                 Spacer(minLength: 8)
 
-                Button(localized("取消", "Cancel")) {
+                Button(tr("取消", "Cancel")) {
                     engine.installer.cancelInstall(modelID: modelID)
                 }
                 .font(.caption.weight(.semibold))
@@ -714,18 +877,27 @@ struct ConfigurationsView: View {
         return formattedBytes(Int64(bytesPerSecond)) + "/s"
     }
 
-    private func modelStateDetail(_ state: ModelInstallState) -> String? {
+    private func modelStateDetail(_ state: ModelInstallState, modelID: String) -> String? {
         switch state {
         case .notInstalled:
-            return localized("未安装", "Not Installed")
+            if engine.installer.hasResumableDownload(for: modelID) {
+                if let metrics = engine.installer.downloadProgress[modelID] {
+                    let progress = downloadMetricsText(metrics)
+                    if !progress.isEmpty {
+                        return tr("可继续下载 · \(progress)", "Ready to resume · \(progress)")
+                    }
+                }
+                return tr("可继续下载", "Ready to resume")
+            }
+            return tr("未安装", "Not Installed")
         case .checkingSource:
-            return localized("正在准备下载。", "Preparing download.")
+            return tr("正在准备下载。", "Preparing download.")
         case .downloading:
             return nil
         case .downloaded:
-            return localized("已下载到手机本地，可直接加载。", "Downloaded on device and ready to load.")
+            return tr("已下载到手机本地，可直接加载。", "Downloaded on device and ready to load.")
         case .bundled:
-            return localized("模型已随 App 内置。", "This model is bundled inside the app.")
+            return tr("模型已随 App 内置。", "This model is bundled inside the app.")
         case .failed(let message):
             return message
         }
@@ -733,81 +905,77 @@ struct ConfigurationsView: View {
 
     private var modelFooterText: String {
         guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }) else {
-            return localized("点右侧按钮下载模型后再点击确定。", "Download a model first, then tap OK.")
+            return tr("点右侧按钮下载模型后再点击确定。", "Download a model first, then tap OK.")
         }
 
         if engine.installer.artifactPath(for: selectedModel) == nil {
-            return localized("先下载选中的模型，再点击确定加载。", "Download the selected model first, then tap OK to load it.")
+            return tr("先下载选中的模型，再点击确定加载。", "Download the selected model first, then tap OK to load it.")
         }
 
         if selectedModelID == engine.catalog.selectedModel.id,
            engine.catalog.loadedModel?.id == selectedModelID,
            engine.inference.isLoaded {
-            return localized("点击确定会保留当前模型。", "Tap OK to keep the current model.")
+            return tr("点击确定会保留当前模型。", "Tap OK to keep the current model.")
         }
 
-        return localized("点击确定后会卸载当前模型并重新加载新模型。", "Tap OK to unload the current model and reload the new one.")
+        return tr("点击确定后会卸载当前模型并重新加载新模型。", "Tap OK to unload the current model and reload the new one.")
     }
 
     // MARK: - 加载 / 应用
 
-    private func localized(_ zh: String, _ en: String) -> String {
-        isChineseSystem ? zh : en
-    }
-
     private func permissionTitle(_ kind: AppPermissionKind) -> String {
         switch kind {
         case .microphone:
-            return localized("麦克风", "Microphone")
+            return tr("麦克风", "Microphone")
         case .camera:
-            return localized("摄像头", "Camera")
+            return tr("摄像头", "Camera")
         case .calendar:
-            return localized("日历", "Calendar")
+            return tr("日历", "Calendar")
         case .reminders:
-            return localized("提醒事项", "Reminders")
+            return tr("提醒事项", "Reminders")
         case .contacts:
-            return localized("通讯录", "Contacts")
+            return tr("通讯录", "Contacts")
         }
     }
 
     private func permissionDescription(_ kind: AppPermissionKind) -> String {
         switch kind {
         case .microphone:
-            return localized("允许录音并采集实时音频输入", "Allow recording and capturing realtime audio input")
+            return tr("允许录音并采集实时音频输入", "Allow recording and capturing realtime audio input")
         case .camera:
-            return localized("允许在 Live 模式中观察周围环境", "Allow camera access for Live mode visual grounding")
+            return tr("允许在 Live 模式中观察周围环境", "Allow camera access for Live mode visual grounding")
         case .calendar:
-            return localized("允许创建和写入日历事项", "Allow creating and writing calendar events")
+            return tr("允许创建和写入日历事项", "Allow creating and writing calendar events")
         case .reminders:
-            return localized("允许创建提醒和待办", "Allow creating reminders and tasks")
+            return tr("允许创建提醒和待办", "Allow creating reminders and tasks")
         case .contacts:
-            return localized("允许保存和更新联系人", "Allow saving and updating contacts")
+            return tr("允许保存和更新联系人", "Allow saving and updating contacts")
         }
     }
 
     private func permissionStatusLabel(_ status: AppPermissionStatus) -> String {
         switch status {
         case .notDetermined:
-            return localized("未请求", "Not Requested")
+            return tr("未请求", "Not Requested")
         case .denied:
-            return localized("已拒绝", "Denied")
+            return tr("已拒绝", "Denied")
         case .restricted:
-            return localized("受限制", "Restricted")
+            return tr("受限制", "Restricted")
         case .granted:
-            return localized("已授权", "Granted")
+            return tr("已授权", "Granted")
         }
     }
 
     private func permissionStatusDetail(_ status: AppPermissionStatus) -> String {
         switch status {
         case .notDetermined:
-            return localized("首次使用时会弹出系统授权框", "The system permission dialog will appear on first use")
+            return tr("首次使用时会弹出系统授权框", "The system permission dialog will appear on first use")
         case .denied:
-            return localized("请到系统设置里手动开启权限", "Please enable this permission manually in Settings")
+            return tr("请到系统设置里手动开启权限", "Please enable this permission manually in Settings")
         case .restricted:
-            return localized("当前设备限制了这项权限", "This permission is restricted on the current device")
+            return tr("当前设备限制了这项权限", "This permission is restricted on the current device")
         case .granted:
-            return localized("可以直接执行相关 Skill", "Related skills can run directly")
+            return tr("可以直接执行相关 Skill", "Related skills can run directly")
         }
     }
 
@@ -832,11 +1000,7 @@ struct ConfigurationsView: View {
 
         guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }),
               engine.installer.artifactPath(for: selectedModel) != nil else {
-            if let missingModel = engine.availableModels.first(where: { $0.id == selectedModelID }) {
-                engine.inference.statusMessage = localized("请先在配置中下载 ", "Please download ")
-                    + missingModel.displayName
-                    + localized(" 模型", " first")
-            }
+            engine.inference.statusMessage = tr("请先下载模型", "Download a model first")
             return false
         }
 

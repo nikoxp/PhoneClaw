@@ -43,39 +43,13 @@ class ModelConfig {
 }
 
 // MARK: - SYSPROMPT 默认内容（仅在文件不存在时写入磁盘）
-private let kDefaultSystemPrompt = """
-你是 PhoneClaw，一个运行在本地设备上的私人 AI 助手。你完全离线运行，不联网，保护用户隐私。
-
-你拥有以下两类能力（Skill）：
-
-【设备操作类】（访问 iPhone 硬件或系统数据）
-___DEVICE_SKILLS___
-
-【内容处理类】（对文字做变换：翻译/总结/改写 等）
-___CONTENT_SKILLS___
-
-调用规则：
-
-▶ 设备操作类 skill：
-  - 只有用户明确要求执行某项设备操作时，才调用 load_skill。
-  - "配置""信息""看看""帮我查一下"这类含糊词，不足以触发。
-  - 闲聊、追问上文、解释已有结果时不调用。
-
-▶ 内容处理类 skill：
-  - 只要用户意图是对文字做该类变换（翻译/总结/改写 等），立即调用 load_skill。
-  - 即使用户用了"这段""刚才那段""上面"等指代词且没贴出源文本，也必须先调用 load_skill。
-    加载后的指令会告诉你如何从对话历史中定位源文本。**不要**先反问用户。
-
-▶ 普通闲聊、追问设备操作结果、解释已经输出的内容：直接回答，不要调用任何 skill。
-
-调用格式：
-<tool_call>
-{"name": "load_skill", "arguments": {"skill": "能力名"}}
-</tool_call>
-
-加载 skill 之后请按其指令执行；拿到工具结果后优先直接给最终答案，不要无谓追问。
-用中文回答，简洁实用。
-"""
+//
+// 按当前语言从 PromptLocale 取. zh 版字节相同于原硬编码文本 (已经
+// PromptLocale foundation commit 里做过 diff 验证), en 版翻译结构对齐。
+// 用 var computed 而非 let: 保证用户切换语言后新生成的 SYSPROMPT.md
+// 默认内容跟着变 (仅对 "文件不存在" 的首次写入有效, 已有 SYSPROMPT.md
+// 不会被覆盖, 除非走到旧版模板的 migration 路径).
+private var kDefaultSystemPrompt: String { PromptLocale.current.defaultSystemPromptAgent }
 
 // MARK: - Hotfix Flags / Planning / Observability
 
@@ -601,8 +575,13 @@ class AgentEngine {
 
     /// 从 ApplicationSupport/PhoneClaw/SYSPROMPT.md 读取 system prompt。
     /// 文件不存在时自动写入 kDefaultSystemPrompt（供用户后续编辑）。
-    /// 如果文件存在但缺少新的 ___DEVICE_SKILLS___ / ___CONTENT_SKILLS___ 占位符,
-    /// 视为旧版自动生成的模板, 备份后用新默认覆盖。
+    /// 两种自动迁移:
+    /// 1. 缺新占位符且仍有旧 `___SKILLS___` → 备份后覆盖
+    /// 2. **Locale 不匹配**: 文件内容**字节相同于** zh/en 的 PromptLocale 默认,
+    ///    但跟当前 locale 的默认不一致 → 备份后覆盖成当前 locale 默认. 这样
+    ///    zh 设备装过 app 再切到 en, 或反过来, 会自动把未编辑的默认 prompt
+    ///    换成当前语言; 用户手动编辑过的内容 (跟两种 default 都不一致)
+    ///    不会被碰.
     func loadSystemPrompt() {
         let fm = FileManager.default
         guard let supportDir = fm.urls(for: .applicationSupportDirectory,
@@ -623,13 +602,28 @@ class AgentEngine {
                 || content.contains("___CONTENT_SKILLS___")
             let hasOldPlaceholder = content.contains("___SKILLS___")
 
+            // Locale-mismatch 检测: 内容恰好是 zh 或 en 的默认 prompt
+            // (用户从未编辑过), 且跟当前 locale default 不一致 → 自动迁移。
+            let current = kDefaultSystemPrompt
+            let zhDefault = PromptLocale.zhHans.defaultSystemPromptAgent
+            let enDefault = PromptLocale.en.defaultSystemPromptAgent
+            let isUnmodifiedDefault = (content == zhDefault) || (content == enDefault)
+            let localeMismatch = isUnmodifiedDefault && (content != current)
+
             if !hasNewPlaceholders && hasOldPlaceholder {
                 let backup = dir.appendingPathComponent("SYSPROMPT.md.bak")
                 try? fm.removeItem(at: backup)
                 try? fm.moveItem(at: file, to: backup)
-                try? kDefaultSystemPrompt.write(to: file, atomically: true, encoding: .utf8)
-                config.systemPrompt = kDefaultSystemPrompt
+                try? current.write(to: file, atomically: true, encoding: .utf8)
+                config.systemPrompt = current
                 print("[Agent] SYSPROMPT migrated: 旧模板已备份到 SYSPROMPT.md.bak, 新默认已写入")
+            } else if localeMismatch {
+                let backup = dir.appendingPathComponent("SYSPROMPT.md.bak")
+                try? fm.removeItem(at: backup)
+                try? fm.moveItem(at: file, to: backup)
+                try? current.write(to: file, atomically: true, encoding: .utf8)
+                config.systemPrompt = current
+                print("[Agent] SYSPROMPT locale migrated to \(LanguageService.shared.current.resolved.rawValue), 旧文件备份到 SYSPROMPT.md.bak")
             } else {
                 config.systemPrompt = content
                 print("[Agent] SYSPROMPT loaded (\(content.count) chars)")
@@ -1020,9 +1014,11 @@ class AgentEngine {
         }
 
         if trimmedDraft.isEmpty {
-            return "仅根据上一轮图片回答无法确定。"
+            return PromptLocale.current.cannotDetermineFromLastImage
         }
 
+        // 结尾补全句号. zh 用 "。", en 用 ".".
+        let terminator = tr("。", ".")
         if trimmedDraft.hasSuffix("、")
             || trimmedDraft.hasSuffix("，")
             || trimmedDraft.hasSuffix(",")
@@ -1030,10 +1026,10 @@ class AgentEngine {
             || trimmedDraft.hasSuffix(":")
             || trimmedDraft.hasSuffix("；")
             || trimmedDraft.hasSuffix(";") {
-            return String(trimmedDraft.dropLast()) + "。"
+            return String(trimmedDraft.dropLast()) + terminator
         }
 
-        return trimmedDraft + "。"
+        return trimmedDraft + terminator
     }
 
     private func streamImageFollowUpStableReply(
@@ -1248,14 +1244,14 @@ class AgentEngine {
         let audioInput = audio.map(AudioInput.from(snapshot:))
         let normalizedText: String
         if trimmed.isEmpty, !promptAttachments.isEmpty {
-            normalizedText = "请描述这张图片。"
+            normalizedText = PromptLocale.current.describeImagePromptFallback
         } else if audio != nil {
             // 有音频就无脑前缀 anchor — E2B/E4B 小模型会把 "这是什么？" 之类短 prompt
             // 当成问它自己, 给出 Gemma 自我介绍模板. 空 text 补一个默认意图作为填充,
             // 不再分两个音频分支。偶尔出现的 "关于这段音频：请转写音频" 式轻微冗余可
             // 接受, 胜过维护一套硬编 anchor 词表。
-            let intent = trimmed.isEmpty ? "请详细转写并描述" : trimmed
-            normalizedText = "关于这段音频：\(intent)"
+            let intent = trimmed.isEmpty ? PromptLocale.current.transcribeAudioIntentFallback : trimmed
+            normalizedText = String(format: PromptLocale.current.audioContextFormat, intent)
         } else {
             normalizedText = trimmed
         }
@@ -1417,7 +1413,7 @@ class AgentEngine {
                     #endif
                     let cleaned = self.cleanOutput(fullText)
                     self.messages[msgIndex].update(
-                        content: cleaned.isEmpty ? "（无回复）" : cleaned
+                        content: cleaned.isEmpty ? PromptLocale.current.emptyReplyPlaceholder : cleaned
                     )
                     self.recordRecentImageFollowUpContext(
                         attachments: promptAttachments,
@@ -1541,7 +1537,7 @@ class AgentEngine {
                       let nextTrimmedHistory = ConversationMemoryPolicy.nextTrimmedPriorHistory(
                         from: trimmedPriorHistory
                       ) else {
-                    let hardRejectMessage = "上下文过长，已无法安全继续。请新开会话或缩短问题。"
+                    let hardRejectMessage = PromptLocale.current.hardRejectContextTooLong
                     if let existingIndex = earlyAssistantPlaceholderIndex,
                        messages.indices.contains(existingIndex) {
                         messages[existingIndex].update(role: .system, content: hardRejectMessage)
@@ -1722,7 +1718,7 @@ class AgentEngine {
                                 await MainActor.run {
                                     if self.messages.indices.contains(msgIndex) {
                                         self.messages[msgIndex].update(
-                                            content: repaired.isEmpty ? "（无回复）" : repaired
+                                            content: repaired.isEmpty ? PromptLocale.current.emptyReplyPlaceholder : repaired
                                         )
                                     }
                                     self.isProcessing = false
@@ -1731,7 +1727,7 @@ class AgentEngine {
                             return
                         }
                         self.messages[msgIndex].update(
-                            content: cleaned.isEmpty ? "（无回复）" : cleaned
+                            content: cleaned.isEmpty ? PromptLocale.current.emptyReplyPlaceholder : cleaned
                         )
                         self.isProcessing = false
                     }
@@ -1835,7 +1831,7 @@ class AgentEngine {
 
         if let lastAssistant = messages.lastIndex(where: { $0.role == .assistant }) {
             let content = messages[lastAssistant].content.replacingOccurrences(of: "▍", with: "")
-            messages[lastAssistant].update(content: content.isEmpty ? "（已中断）" : content)
+            messages[lastAssistant].update(content: content.isEmpty ? PromptLocale.current.cancelledReplyPlaceholder : content)
         }
 
         log("[Agent] Generation cancelled")

@@ -205,18 +205,32 @@ extension AgentEngine {
         }
 
         if trimmed.isEmpty {
-            return "工具 \(toolName) 已执行，但没有返回内容。"
+            return tr(
+                "工具 \(toolName) 已执行，但没有返回内容。",
+                "Tool \(toolName) executed but returned no content."
+            )
         }
 
-        return """
-        工具 \(toolName) 已执行完成，但模型没有生成最终回答。
-        工具返回结果：
-        \(trimmed)
-        """
+        if LanguageService.shared.current.isChinese {
+            return """
+            工具 \(toolName) 已执行完成，但模型没有生成最终回答。
+            工具返回结果：
+            \(trimmed)
+            """
+        } else {
+            return """
+            Tool \(toolName) finished executing, but the model did not produce a final answer.
+            Tool result:
+            \(trimmed)
+            """
+        }
     }
 
     func fallbackReplyForEmptySkillFollowUp(skillName: String) -> String {
-        "Skill \(skillName) 已加载，但模型没有继续生成工具调用或最终回答。请重试，或把问题说得更具体一些。"
+        tr(
+            "Skill \(skillName) 已加载，但模型没有继续生成工具调用或最终回答。请重试，或把问题说得更具体一些。",
+            "Skill \(skillName) is loaded, but the model did not continue with a tool call or final answer. Please retry, or rephrase the question more specifically."
+        )
     }
 
     func markSkillsDone(_ displayNames: [String]) {
@@ -272,8 +286,11 @@ extension AgentEngine {
             // (canonical 会把所有 load_skill 归一成同名, 易误判).
             if sameNameCount >= 1, candidateName != "load_skill" {
                 log("[Agent] 检测到 tool \(candidateName) 已在前面跑过, skip 本次重复, 让模型继续")
-                let lastResult = recentResults.last(where: { ($0.skillName ?? "") == candidateName })?.content ?? "已完成"
-                let pseudoSummary = "[\(candidateName) 已经在前面成功执行, 不需要再调用. 请继续完成用户其他请求, 或给最终中文回复]\n上一次结果: \(lastResult)"
+                let lastResult = recentResults.last(where: { ($0.skillName ?? "") == candidateName })?.content ?? tr("已完成", "Done")
+                let pseudoSummary = tr(
+                    "[\(candidateName) 已经在前面成功执行, 不需要再调用. 请继续完成用户其他请求, 或给最终中文回复]\n上一次结果: \(lastResult)",
+                    "[\(candidateName) has already executed successfully; do not invoke again. Continue with the user's other requests, or give the final answer in English.]\nLast result: \(lastResult)"
+                )
                 let followUpPrompt = PromptBuilder.appendToolResult(
                     toR1Prompt: prompt,
                     r1Output: fullText,
@@ -310,7 +327,7 @@ extension AgentEngine {
         guard let parsedCall = parseToolCall(fullText) else {
             let cleaned = cleanOutput(fullText)
             if let lastAssistant = messages.lastIndex(where: { $0.role == .assistant }) {
-                messages[lastAssistant].update(content: cleaned.isEmpty ? "（无回复）" : cleaned)
+                messages[lastAssistant].update(content: cleaned.isEmpty ? PromptLocale.current.emptyReplyPlaceholder : cleaned)
             }
             isProcessing = false
             return
@@ -334,8 +351,10 @@ extension AgentEngine {
             }
             let listing = results.map { "\($0.id): \($0.description)" }.joined(separator: "\n")
             let resultText = results.isEmpty
-                ? "没有找到匹配「\(query)」的能力。"
-                : "可用能力（\(results.count) 个）：\n\(listing)"
+                ? tr("没有找到匹配「\(query)」的能力。",
+                     "No abilities found matching \"\(query)\".")
+                : tr("可用能力（\(results.count) 个）：\n\(listing)",
+                     "Available abilities (\(results.count)):\n\(listing)")
             log("[Agent] list_skills query=\"\(query)\" results=\(results.count)")
 
             let toolResultSummary = toolResultSummaryForModel(toolName: "list_skills", toolResult: resultText)
@@ -366,7 +385,7 @@ extension AgentEngine {
                 )
             } else {
                 let cleaned = cleanOutput(nextText)
-                messages[followUpIndex].update(content: cleaned.isEmpty ? "（无回复）" : cleaned)
+                messages[followUpIndex].update(content: cleaned.isEmpty ? PromptLocale.current.emptyReplyPlaceholder : cleaned)
                 isProcessing = false
             }
             return
@@ -529,7 +548,7 @@ extension AgentEngine {
                     } else {
                         let retryCleaned = cleanOutput(retryText)
                         let loadedSkillName = loadedDisplayNames.joined(separator: ", ").isEmpty
-                            ? "已加载的能力"
+                            ? tr("已加载的能力", "loaded ability")
                             : loadedDisplayNames.joined(separator: ", ")
                         let finalReply = retryCleaned.isEmpty
                             || looksLikeStructuredIntermediateOutput(retryCleaned)
@@ -567,7 +586,10 @@ extension AgentEngine {
 
         guard ownerSkillId != nil else {
             messages[cardIndex].update(role: .system, content: "done", skillName: displayName)
-            messages.append(ChatMessage(role: .assistant, content: "⚠️ 未知工具: \(call.name)"))
+            messages.append(ChatMessage(role: .assistant, content: tr(
+                "⚠️ 未知工具: \(call.name)",
+                "⚠️ Unknown tool: \(call.name)"
+            )))
             isProcessing = false
             return
         }
@@ -575,7 +597,10 @@ extension AgentEngine {
         let enabledIds = Set(skillEntries.filter(\.isEnabled).map(\.id))
         guard enabledIds.contains(ownerSkillId!) else {
             messages[cardIndex].update(role: .system, content: "done", skillName: displayName)
-            messages.append(ChatMessage(role: .assistant, content: "⚠️ Skill \(displayName) 未启用"))
+            messages.append(ChatMessage(role: .assistant, content: tr(
+                "⚠️ Skill \(displayName) 未启用",
+                "⚠️ Skill \(displayName) is not enabled"
+            )))
             isProcessing = false
             return
         }
@@ -644,7 +669,10 @@ extension AgentEngine {
             }
         } catch {
             messages[cardIndex].update(role: .system, content: "done", skillName: displayName)
-            messages.append(ChatMessage(role: .system, content: "❌ Tool 执行失败: \(error)"))
+            messages.append(ChatMessage(role: .system, content: tr(
+                "❌ Tool 执行失败: \(error)",
+                "❌ Tool execution failed: \(error)"
+            )))
             isProcessing = false
         }
     }

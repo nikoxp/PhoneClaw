@@ -98,7 +98,8 @@ struct ContentView: View {
         .task {
             guard !ProcessInfo.processInfo.isRunningXCTest else { return }
             engine.setup()
-            holdToTalkASR.initialize()
+            // 不在这里 initialize hold-to-talk ASR. 改为用户第一次按住说话时
+            // 通过 ASRService.ensureInitialized 懒加载, 避免 cold start 就占 ~160MB.
         }
         .task(id: selectedPhotoItem) {
             await loadSelectedPhoto()
@@ -111,6 +112,14 @@ struct ContentView: View {
             engine.flushPendingSessionSave()
             engine.cancelActiveGeneration()
             _ = audioCapture.stopCapture()
+        }
+        .onChange(of: engine.messages.isEmpty) { wasEmpty, isEmpty in
+            // 新会话: 卸载 hold-to-talk ASR 以释放 ~160MB. 下次按住说话会 lazy 重新加载.
+            // 注意 onChange 只在**变化**时 fire, 初次 render 不会触发. wasEmpty 参数
+            // 保证我们只响应 "有消息 -> 清空" 这个方向, 忽略新开一条消息的方向.
+            if isEmpty && !wasEmpty {
+                holdToTalkASR.unload()
+            }
         }
         .sheet(isPresented: $showHistory) {
             SessionHistorySheet(engine: engine)
@@ -205,6 +214,11 @@ struct ContentView: View {
     private func toggleThinkingMode() {
         engine.config.enableThinking.toggle()
         engine.applySamplingConfig()
+        // 切换 Think 需要清 KV cache: system prompt 的 <|think|> 段变化后,
+        // 若当前会话已有 context, 下一轮走 delta prompt 路径会**复用**旧
+        // system prompt, 模型继续按旧设置 reasoning. reset 强制下一轮重新
+        // prefill, 新 enableThinking 才能真正生效。
+        Task { await engine.inference.resetKVSession() }
     }
 
     private func canRetry(item: DisplayItem, block: ResponseBlock) -> Bool {
@@ -239,7 +253,7 @@ struct ContentView: View {
                 Circle()
                     .fill(engine.inference.isLoaded ? Theme.accentGreen : Theme.accent)
                     .frame(width: 6, height: 6)
-                Text(engine.inference.isLoaded ? engine.catalog.modelDisplayName : engine.inference.statusMessage)
+                Text(topModelStatusText)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -266,7 +280,7 @@ struct ContentView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 11, weight: .semibold))
-                        Text(localizedThinkingText("思考", "Think"))
+                        Text(tr("思考", "Think"))
                             .font(.system(size: 11, weight: .semibold, design: .rounded))
                     }
                     .foregroundStyle(engine.config.enableThinking ? Theme.bg : Theme.textSecondary)
@@ -293,6 +307,34 @@ struct ContentView: View {
         .padding(.vertical, 10)
     }
 
+    private var topModelStatusText: String {
+        if engine.inference.isLoaded {
+            return engine.catalog.modelDisplayName
+        }
+
+        let selectedModel = engine.catalog.selectedModel
+        switch engine.installer.installState(for: selectedModel.id) {
+        case .notInstalled:
+            if engine.installer.hasResumableDownload(for: selectedModel.id) {
+                return tr("可继续下载模型", "Resume model download")
+            }
+            if engine.installer.artifactPath(for: selectedModel) == nil {
+                return tr("请先下载模型", "Download a model first")
+            }
+            return engine.inference.statusMessage
+        case .checkingSource:
+            return tr("正在准备下载...", "Preparing download...")
+        case .downloading:
+            return tr("正在下载模型...", "Downloading model...")
+        case .downloaded:
+            return tr("模型已下载，等待加载", "Model downloaded, waiting to load")
+        case .bundled:
+            return tr("模型已内置，等待加载", "Bundled model, waiting to load")
+        case .failed:
+            return tr("模型下载失败", "Model download failed")
+        }
+    }
+
     // MARK: - 欢迎页
 
     private var welcomeView: some View {
@@ -316,7 +358,7 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "waveform.circle.fill")
                         .font(.system(size: 16, weight: .semibold))
-                    Text("进入 LIVE")
+                    Text(tr("进入 LIVE", "Enter LIVE"))
                         .font(.system(size: 15, weight: .bold, design: .rounded))
                 }
                 .foregroundStyle(canEnterLiveMode ? Theme.bg : Theme.textTertiary)
@@ -399,19 +441,19 @@ struct ContentView: View {
                     Button {
                         showPhotoPicker = true
                     } label: {
-                        Label("照片", systemImage: "photo")
+                        Label(tr("照片", "Photo"), systemImage: "photo")
                     }
                     #endif
                     Button {
                         captureOrigin = .menu
                         Task { _ = await audioCapture.toggleCapture() }
                     } label: {
-                        Label(audioCapture.isCapturing && captureOrigin == .menu ? "停止录音" : "录音", systemImage: audioCapture.isCapturing && captureOrigin == .menu ? "stop.fill" : "waveform")
+                        Label(audioCapture.isCapturing && captureOrigin == .menu ? tr("停止录音", "Stop Recording") : tr("录音", "Record"), systemImage: audioCapture.isCapturing && captureOrigin == .menu ? "stop.fill" : "waveform")
                     }
                     Button {
                         showFilePicker = true
                     } label: {
-                        Label("文件", systemImage: "doc")
+                        Label(tr("文件", "File"), systemImage: "doc")
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -519,7 +561,7 @@ struct ContentView: View {
     // MARK: - 按住说话
 
     private var holdToTalkButton: some View {
-        Text(isHoldRecording ? "松开 结束" : "按住 说话")
+        Text(isHoldRecording ? tr("松开 结束", "Release to Stop") : tr("按住 说话", "Hold to Talk"))
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(isHoldRecording ? Theme.bg : Theme.textSecondary)
             .frame(maxWidth: .infinity)
@@ -561,6 +603,7 @@ struct ContentView: View {
                                 print("[UI] Hold-to-talk: empty ASR result, ignoring")
                                 return
                             }
+                            print("[UI] Hold-to-talk ASR transcript: \"\(transcript)\"")
                             inputText = transcript
                             await send()
                         }
@@ -631,11 +674,11 @@ struct ContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(importedAudioFilename ?? "音频文件")
+                Text(importedAudioFilename ?? tr("音频文件", "Audio File"))
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
-                Text(String(format: "%.1f 秒 · %d kHz", snapshot.duration, Int(snapshot.sampleRate / 1000)))
+                Text(String(format: tr("%.1f 秒 · %d kHz", "%.1f s · %d kHz"), snapshot.duration, Int(snapshot.sampleRate / 1000)))
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -781,7 +824,7 @@ struct ContentView: View {
                     importedAudioFilename = filename
                     print("[UI] Audio file decoded: \(filename) → \(snapshot.pcm.count) samples @ \(Int(snapshot.sampleRate))Hz, \(String(format: "%.1f", snapshot.duration))s")
                 } catch {
-                    inputText += (inputText.isEmpty ? "" : "\n") + "[附件: \(filename) — 音频解码失败]"
+                    inputText += (inputText.isEmpty ? "" : "\n") + tr("[附件: \(filename) — 音频解码失败]", "[Attachment: \(filename) — audio decode failed]")
                     print("[UI] Failed to decode audio file: \(error)")
                 }
             }
@@ -799,18 +842,18 @@ struct ContentView: View {
                     }
                     let trimmed = pdfText.trimmingCharacters(in: .whitespacesAndNewlines)
                     if trimmed.isEmpty {
-                        inputText += (inputText.isEmpty ? "" : "\n") + "[附件: \(filename) — PDF 无法提取文字]"
+                        inputText += (inputText.isEmpty ? "" : "\n") + tr("[附件: \(filename) — PDF 无法提取文字]", "[Attachment: \(filename) — couldn't extract text from PDF]")
                     } else {
                         // 限制长度避免超出上下文
                         let maxChars = 4000
                         let content = trimmed.count > maxChars
-                            ? String(trimmed.prefix(maxChars)) + "\n...(已截断)"
+                            ? String(trimmed.prefix(maxChars)) + tr("\n...(已截断)", "\n...(truncated)")
                             : trimmed
-                        inputText += (inputText.isEmpty ? "" : "\n") + "以下是 \(filename) 的内容:\n\(content)"
+                        inputText += (inputText.isEmpty ? "" : "\n") + tr("以下是 \(filename) 的内容:\n\(content)", "Contents of \(filename):\n\(content)")
                     }
                     print("[UI] PDF imported: \(filename) (\(pdfDoc.numberOfPages) pages)")
                 } else {
-                    inputText += (inputText.isEmpty ? "" : "\n") + "[附件: \(filename) — PDF 打开失败]"
+                    inputText += (inputText.isEmpty ? "" : "\n") + tr("[附件: \(filename) — PDF 打开失败]", "[Attachment: \(filename) — couldn't open PDF]")
                 }
             }
             // 文本文件 → 直接读取
@@ -819,9 +862,9 @@ struct ContentView: View {
                     let content = try String(contentsOf: url, encoding: .utf8)
                     let maxChars = 4000
                     let trimmed = content.count > maxChars
-                        ? String(content.prefix(maxChars)) + "\n...(已截断)"
+                        ? String(content.prefix(maxChars)) + tr("\n...(已截断)", "\n...(truncated)")
                         : content
-                    inputText += (inputText.isEmpty ? "" : "\n") + "以下是 \(filename) 的内容:\n\(trimmed)"
+                    inputText += (inputText.isEmpty ? "" : "\n") + tr("以下是 \(filename) 的内容:\n\(trimmed)", "Contents of \(filename):\n\(trimmed)")
                     print("[UI] Text file imported: \(filename)")
                 } catch {
                     print("[UI] Failed to read text file: \(error)")
@@ -829,7 +872,7 @@ struct ContentView: View {
             }
             // 其他 → 标注文件名
             else {
-                inputText += (inputText.isEmpty ? "" : "\n") + "[附件: \(filename)]"
+                inputText += (inputText.isEmpty ? "" : "\n") + tr("[附件: \(filename)]", "[Attachment: \(filename)]")
                 print("[UI] Unknown file type imported: \(filename)")
             }
 
@@ -940,7 +983,7 @@ private struct SessionHistorySheet: View {
                                                 .foregroundStyle(Theme.textPrimary)
                                                 .lineLimit(1)
                                             if session.id == engine.currentSessionID {
-                                                Text("当前")
+                                                Text(tr("当前", "Current"))
                                                     .font(.system(size: 11, weight: .semibold))
                                                     .foregroundStyle(Theme.bg)
                                                     .padding(.horizontal, 6)
@@ -977,11 +1020,11 @@ private struct SessionHistorySheet: View {
                     .background(Theme.bg)
                 }
             }
-            .navigationTitle("历史记录")
+            .navigationTitle(tr("历史记录", "History"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("关闭") {
+                    Button(tr("关闭", "Close")) {
                         dismiss()
                     }
                 }
@@ -991,7 +1034,7 @@ private struct SessionHistorySheet: View {
                         engine.startNewSession()
                         dismiss()
                     } label: {
-                        Label("新会话", systemImage: "square.and.pencil")
+                        Label(tr("新会话", "New Chat"), systemImage: "square.and.pencil")
                     }
                 }
             }
@@ -1005,11 +1048,14 @@ private struct SessionHistorySheet: View {
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(Theme.textTertiary)
 
-            Text("还没有历史记录")
+            Text(tr("还没有历史记录", "No chat history yet"))
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
 
-            Text("开始一次新会话后，聊天内容会自动保存在这里。")
+            Text(tr(
+                "开始一次新会话后，聊天内容会自动保存在这里。",
+                "Start a new chat — your messages will be saved here automatically."
+            ))
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
@@ -1018,7 +1064,7 @@ private struct SessionHistorySheet: View {
                 engine.startNewSession()
                 dismiss()
             } label: {
-                Text("开始新会话")
+                Text(tr("开始新会话", "Start New Chat"))
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.bg)
                     .padding(.horizontal, 16)
@@ -1065,7 +1111,7 @@ struct UserBubble: View {
                             Button {
                                 UIPasteboard.general.string = text
                             } label: {
-                                Label("复制", systemImage: "doc.on.doc")
+                                Label(tr("复制", "Copy"), systemImage: "doc.on.doc")
                             }
                         }
                 }

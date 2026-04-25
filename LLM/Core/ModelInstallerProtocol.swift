@@ -49,6 +49,9 @@ public protocol ModelInstaller: AnyObject {
     /// 查询安装状态
     func installState(for modelID: String) -> ModelInstallState
 
+    /// 是否存在可继续下载的 partial/manifest 状态
+    func hasResumableDownload(for modelID: String) -> Bool
+
     /// 获取模型文件的本地路径 (nil = 未安装)
     func artifactPath(for model: ModelDescriptor) -> URL?
 
@@ -60,4 +63,10 @@ public protocol ModelInstaller: AnyObject {
 
     /// 各模型的安装状态 (可观察)
     var installStates: [String: ModelInstallState] { get }
+}
+
+public extension ModelInstaller {
+    func hasResumableDownload(for modelID: String) -> Bool {
+        false
+    }
 }

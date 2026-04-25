@@ -47,7 +47,10 @@ func canonicalToolResult(
     guard !trimmed.isEmpty else {
         return CanonicalToolResult(
             success: true,
-            summary: "工具 \(toolName) 已执行，但没有返回内容。",
+            summary: tr(
+                "工具 \(toolName) 已执行，但没有返回内容。",
+                "Tool \(toolName) executed but returned no content."
+            ),
             detail: ""
         )
     }
@@ -61,8 +64,10 @@ func canonicalToolResult(
             return CanonicalToolResult(
                 success: false,
                 summary: errorText.isEmpty
-                    ? "工具 \(toolName) 执行失败。"
-                    : "工具 \(toolName) 执行失败：\(errorText)",
+                    ? tr("工具 \(toolName) 执行失败。",
+                         "Tool \(toolName) execution failed.")
+                    : tr("工具 \(toolName) 执行失败：\(errorText)",
+                         "Tool \(toolName) execution failed: \(errorText)"),
                 detail: trimmed,
                 errorCode: payload["error_code"] as? String
             )

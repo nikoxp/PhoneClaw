@@ -234,11 +234,11 @@ struct LiveModeView: View {
     /// SwiftUI 只会 diff 文本, 不会 unmount/remount. 同文本时视觉零变化.
     private var currentUserCaption: (label: String, text: String, isLive: Bool)? {
         if let caption = realtimeCaption {
-            return (label: "识别中", text: caption, isLive: true)
+            return (label: tr("识别中", "Listening"), text: caption, isLive: true)
         }
         let trimmed = liveEngine.lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            return (label: "你", text: trimmed, isLive: false)
+            return (label: tr("你", "You"), text: trimmed, isLive: false)
         }
         return nil
     }
@@ -343,7 +343,7 @@ struct LiveModeView: View {
                 HStack(spacing: 8) {
                     Image(systemName: isCameraEnabled ? "camera.fill" : "camera")
                         .font(.system(size: 14, weight: .bold))
-                    Text(isCameraEnabled ? "关闭摄像头" : "开摄像头")
+                    Text(isCameraEnabled ? tr("关闭摄像头", "Stop Camera") : tr("开摄像头", "Start Camera"))
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                 }
                 .foregroundStyle(isCameraEnabled ? Theme.accent : .white)
@@ -358,7 +358,7 @@ struct LiveModeView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "phone.down.fill")
                         .font(.system(size: 14, weight: .bold))
-                    Text("结束")
+                    Text(tr("结束", "End"))
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                 }
                 .foregroundStyle(.white)

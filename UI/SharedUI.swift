@@ -1,11 +1,5 @@
 import SwiftUI
 
-// MARK: - Helpers
-
-func localizedThinkingText(_ zh: String, _ en: String) -> String {
-    Locale.preferredLanguages.contains { $0.hasPrefix("zh") } ? zh : en
-}
-
 // MARK: - 共享 UI 组件
 
 struct UserBubbleShape: Shape {

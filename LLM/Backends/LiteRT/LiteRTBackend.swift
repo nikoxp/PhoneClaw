@@ -26,7 +26,7 @@ final class LiteRTBackend: InferenceService {
     private(set) var isLoaded = false
     private(set) var isLoading = false
     private(set) var isGenerating = false
-    var statusMessage = "等待加载模型..."
+    var statusMessage = tr("等待加载模型...", "Waiting to load model...")
     private(set) var stats = InferenceStats()
 
     // MARK: - Sampling Config
@@ -162,12 +162,17 @@ final class LiteRTBackend: InferenceService {
         guard let modelPath = modelPathResolver(modelID) else {
             let descriptor = ModelDescriptor.allModels.first { $0.id == modelID }
             let name = descriptor?.displayName ?? modelID
-            statusMessage = "请先在配置中下载 \(name) 模型"
+            statusMessage = tr(
+                "请先在配置中下载 \(name) 模型",
+                "Please download the \(name) model in Configuration first."
+            )
             throw ModelBackendError.modelFileMissing(name)
         }
 
         isLoading = true
-        statusMessage = mode == .multimodal ? "正在加载多模态模型..." : "正在加载模型..."
+        statusMessage = mode == .multimodal
+            ? tr("正在加载多模态模型...", "Loading multimodal model...")
+            : tr("正在加载模型...", "Loading model...")
         cancelled = false
 
         let loadStart = CFAbsoluteTimeGetCurrent()
@@ -243,7 +248,10 @@ final class LiteRTBackend: InferenceService {
             self.stats.loadTimeMs = elapsed
 
             let descriptor = ModelDescriptor.allModels.first { $0.id == modelID }
-            statusMessage = "已加载 \(descriptor?.displayName ?? modelID)"
+            statusMessage = tr(
+                "已加载 \(descriptor?.displayName ?? modelID)",
+                "Loaded \(descriptor?.displayName ?? modelID)"
+            )
             PCLog.modelLoaded(modelID: modelID, backend: "litert-\(preferredBackend)", loadMs: elapsed)
             onModelLoaded?(modelID)
         } catch {
@@ -264,7 +272,10 @@ final class LiteRTBackend: InferenceService {
                 userInfo: ["modelID": modelID]
             )
 
-            statusMessage = "❌ \(displayName) 文件损坏，请重新下载"
+            statusMessage = tr(
+                "❌ \(displayName) 文件损坏，请重新下载",
+                "❌ \(displayName) file is corrupt. Please download it again."
+            )
             PCLog.modelLoadFailed(modelID: modelID, reason: error.localizedDescription)
             throw error
         }
@@ -286,7 +297,7 @@ final class LiteRTBackend: InferenceService {
         loadedModelID = nil
         isLoaded = false
         isGenerating = false
-        statusMessage = "等待加载模型..."
+        statusMessage = tr("等待加载模型...", "Waiting to load model...")
         onModelUnloaded?()
         PCLog.modelUnloaded()
     }
@@ -517,6 +528,7 @@ final class LiteRTBackend: InferenceService {
                 var tokenCount = 0
                 var firstTokenTime: Double?
                 var modelOutput = ""
+                var streamError: Error?
 
                 do {
                     if self.pendingTextSessionRestore {
@@ -548,10 +560,7 @@ final class LiteRTBackend: InferenceService {
                     }
 
                     for try await token in stream {
-                        if self.cancelled {
-                            continuation.finish()
-                            break
-                        }
+                        if self.cancelled { break }
                         tokenCount += 1
                         if firstTokenTime == nil {
                             firstTokenTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
@@ -559,14 +568,15 @@ final class LiteRTBackend: InferenceService {
                         modelOutput += token
                         continuation.yield(token)
                     }
-                    if !self.cancelled {
-                        continuation.finish()
-                    }
+                    streamError = nil
                 } catch {
-                    continuation.finish(throwing: error)
+                    streamError = error
                 }
 
-                // Cache model output for next turn's delta construction
+                // 先翻转 isGenerating=false, 再 finish() 通知消费方.
+                // AgentEngine 的 onComplete 在 finish 后同步 set isProcessing=false,
+                // 如果 isGenerating 还是 true, 会出现 (!isProcessing, isGenerating) 的
+                // 不一致中间态, UI 上的 "发送/停止" 按钮就会多滞留 ~百毫秒的 red state.
                 let finalOutput = modelOutput
                 await MainActor.run { [weak self] in
                     guard let self else { return }
@@ -587,6 +597,12 @@ final class LiteRTBackend: InferenceService {
                         chunksPerSec: self.stats.chunksPerSec,
                         headroomMB: MemoryStats.headroomMB
                     )
+                }
+
+                if let streamError {
+                    continuation.finish(throwing: streamError)
+                } else {
+                    continuation.finish()
                 }
             }
         }
@@ -676,6 +692,8 @@ final class LiteRTBackend: InferenceService {
                     return
                 }
 
+                var mmError: Error?
+
                 do {
                     // CIImage → JPEG Data
                     var imagesData: [Data] = []
@@ -719,11 +737,8 @@ final class LiteRTBackend: InferenceService {
                             temperature: self.samplingTemperature,
                             maxTokens: Int(self.maxOutputTokens)
                         )
-                        if !self.cancelled {
-                            if !text.isEmpty {
-                                continuation.yield(text)
-                            }
-                            continuation.finish()
+                        if !self.cancelled, !text.isEmpty {
+                            continuation.yield(text)
                         }
                     } else {
                         let stream = engine.multimodalStreaming(
@@ -734,23 +749,25 @@ final class LiteRTBackend: InferenceService {
                             maxTokens: self.maxOutputTokens
                         )
                         for try await chunk in stream {
-                            if self.cancelled {
-                                continuation.finish()
-                                break
-                            }
+                            if self.cancelled { break }
                             continuation.yield(chunk)
                         }
-                        if !self.cancelled {
-                            continuation.finish()
-                        }
                     }
+                    mmError = nil
                 } catch {
-                    continuation.finish(throwing: error)
+                    mmError = error
                 }
 
+                // 翻转 isGenerating BEFORE finish() — 跟 text 路径对齐, 避免 onComplete 误判为仍在生成.
                 await MainActor.run { [weak self] in
                     self?.isGenerating = false
                     self?.sessionGroupManagedMultimodal = false
+                }
+
+                if let mmError {
+                    continuation.finish(throwing: mmError)
+                } else {
+                    continuation.finish()
                 }
 
                 // session-group 编排启用时，multimodal -> text 采用 lazy reopen：
@@ -789,6 +806,7 @@ final class LiteRTBackend: InferenceService {
 
                 var tokenCount = 0
                 var firstTokenTime: Double?
+                var liveError: Error?
 
                 do {
                     var imagesData: [Data] = []
@@ -807,23 +825,18 @@ final class LiteRTBackend: InferenceService {
                     )
 
                     for try await token in stream {
-                        if self.cancelled {
-                            continuation.finish()
-                            break
-                        }
+                        if self.cancelled { break }
                         tokenCount += 1
                         if firstTokenTime == nil {
                             firstTokenTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
                         }
                         continuation.yield(token)
                     }
-                    if !self.cancelled {
-                        continuation.finish()
-                    }
                 } catch {
-                    continuation.finish(throwing: error)
+                    liveError = error
                 }
 
+                // 翻转 isGenerating BEFORE finish() — 跟 text 路径对齐, 避免 red button lag.
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.isGenerating = false
@@ -841,6 +854,12 @@ final class LiteRTBackend: InferenceService {
                         chunksPerSec: self.stats.chunksPerSec,
                         headroomMB: MemoryStats.headroomMB
                     )
+                }
+
+                if let liveError {
+                    continuation.finish(throwing: liveError)
+                } else {
+                    continuation.finish()
                 }
             }
         }
