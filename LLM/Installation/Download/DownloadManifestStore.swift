@@ -84,13 +84,14 @@ actor DownloadManifestStore {
         for file in manifest.files where file.state != .complete {
             let partialURL = try partialFileURL(for: assetID, relativePath: file.relativePath)
             let partialBytes = fileSize(at: partialURL)
-            let bytes = max(partialBytes, file.downloadedBytes)
+            let expectedBytes = file.metadata?.contentLength ?? file.expectedBytes
+            let bytes = clampedResumeBytes(max(partialBytes, file.downloadedBytes), expectedBytes: expectedBytes)
             guard bytes > 0 else { continue }
 
             downloadedBytes += bytes
             resumableFileCount += 1
 
-            if let expected = file.expectedBytes ?? file.metadata?.contentLength, expected > 0 {
+            if let expected = expectedBytes, expected > 0 {
                 totalBytes += expected
             } else {
                 hasUnknownTotal = true
@@ -165,6 +166,12 @@ actor DownloadManifestStore {
             return 0
         }
         return (attributes[.size] as? Int64) ?? 0
+    }
+
+    private func clampedResumeBytes(_ bytes: Int64, expectedBytes: Int64?) -> Int64 {
+        let positiveBytes = max(0, bytes)
+        guard let expectedBytes, expectedBytes > 0 else { return positiveBytes }
+        return min(positiveBytes, expectedBytes)
     }
 
     private func atomicWrite(_ data: Data, to destinationURL: URL) throws {

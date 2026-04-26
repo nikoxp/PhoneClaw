@@ -15,7 +15,11 @@ struct MLXTokenizerBridge: MLXLMCommon.Tokenizer {
     }
 
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        upstream.decode(tokenIds: tokenIds, skipSpecialTokens: skipSpecialTokens)
+        // iOS target depends on swift-transformers (huggingface) which uses
+        // `decode(tokens:)` — CLI target uses swift-tokenizers (DePasqualeOrg)
+        // which uses `decode(tokenIds:)`. PhoneClawCLI/.../MLXTokenizersLoader.swift
+        // 是 CLI 自己那一份, 跟这个文件是两份独立 copy.
+        upstream.decode(tokens: tokenIds, skipSpecialTokens: skipSpecialTokens)
     }
 
     func convertTokenToId(_ token: String) -> Int? {
@@ -41,15 +45,22 @@ struct MLXTokenizerBridge: MLXLMCommon.Tokenizer {
                 tools: tools,
                 additionalContext: additionalContext
             )
-        } catch let error as Tokenizers.TokenizerError where error == .missingChatTemplate {
-            throw MLXLMCommon.TokenizerError.missingChatTemplate
+        } catch let error as Tokenizers.TokenizerError {
+            if case .missingChatTemplate = error {
+                throw MLXLMCommon.TokenizerError.missingChatTemplate
+            }
+            throw error
         }
     }
 }
 
 struct MLXTokenizersLoader: TokenizerLoader {
     func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
-        let upstream = try await AutoTokenizer.from(directory: directory)
+        // iOS Xcode 用 swift-transformers (huggingface) 1.1.9, API 是
+        // from(modelFolder:); CLI 那份 (PhoneClawCLI/.../MLXTokenizersLoader.swift)
+        // 用 swift-tokenizers (DePasqualeOrg) 0.2.x, API 是 from(directory:).
+        // 两份文件独立, 不要试图共用.
+        let upstream = try await AutoTokenizer.from(modelFolder: directory)
         return MLXTokenizerBridge(upstream)
     }
 }
