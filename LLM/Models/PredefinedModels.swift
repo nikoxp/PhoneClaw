@@ -24,7 +24,18 @@ public extension ModelDescriptor {
             URL(string: "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm")!,
         ],
         fileName: "gemma-4-E2B-it.litertlm",
-        expectedFileSize: 2_600_000_000,
+        // expectedFileSize 的用途 (v1.3.2 之后):
+        //   1. UI 进度估算 — 显示 "1.2 GB / ~2.5 GB"
+        //   2. 磁盘空间预检 — 下载前确认存储够用
+        //   3. LiteRTModelStore 的 90% 下限粗校验 — 防止把明显残缺的文件
+        //      (e.g. 100 MB) 当成可用模型, 容差 10% 能吸收 HF 上游重传带来的
+        //      正常体积变化
+        //
+        // **不参与** 下载完成的精确字节级校验 — 那一层只信 HTTP server 返回的
+        // Content-Length / Content-Range total (见 ResumableAssetDownloader)。
+        //
+        // 数值取自 HF 当前实际大小, 上游若重传几 MB 不影响功能。
+        expectedFileSize: 2_588_147_712,
         capabilities: ModelCapabilities(
             supportsVision: true,
             supportsAudio: true,
@@ -67,7 +78,8 @@ public extension ModelDescriptor {
             URL(string: "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm")!,
         ],
         fileName: "gemma-4-E4B-it.litertlm",
-        expectedFileSize: 3_700_000_000,
+        // expectedFileSize 三个用途 + 不参与精确字节校验, 详见 E2B 同字段注释。
+        expectedFileSize: 3_659_530_240,
         capabilities: ModelCapabilities(
             supportsVision: true,
             supportsAudio: true,

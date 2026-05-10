@@ -388,8 +388,26 @@ actor ResumableAssetDownloader {
             )
         }
 
-        let responseMetadata = makeMetadata(from: httpResponse, source: source, offset: usingResumeData ? 0 : offset, fallbackExpectedSize: file.expectedSize)
-        let expectedBytes = responseMetadata.contentLength ?? tracker.expectedBytes ?? file.expectedSize
+        // resumeData 模式下我们不知道 URLSession 实际用的 offset, Content-Length
+        // 是剩余字节数而非整文件长度; 必须 requireContentRangeForTotalLength
+        // 把 contentLength 限定为只能来自 Content-Range total。
+        let responseMetadata = makeMetadata(
+            from: httpResponse,
+            source: source,
+            offset: usingResumeData ? 0 : offset,
+            requireContentRangeForTotalLength: usingResumeData
+        )
+
+        // serverAuthoritativeBytes: 只接受这次下载里 HTTP 服务器给出的大小
+        //   — 来自当前 GET 响应的 Content-Length / Content-Range
+        //   — 或 resumePlan 阶段 HEAD probe 拿到的 metadata.contentLength
+        // 绝不接受常量 (file.expectedSize) 或上一次 manifest 里的 stale 值。
+        // 只有它非 nil 时才参与 finalSizeMismatch 硬校验, 不然信任下载字节数。
+        let serverAuthoritativeBytes = responseMetadata.contentLength ?? metadata?.contentLength
+
+        // expectedBytes: 给进度 UI / manifest 估算用, 允许常量兜底。
+        // 这个值不参与硬校验。
+        let expectedBytes = serverAuthoritativeBytes ?? tracker.expectedBytes ?? file.expectedSize
 
         if offset > 0, !usingResumeData {
             try appendDownloadedFile(temporaryFileURL, to: partialURL)
@@ -400,7 +418,14 @@ actor ResumableAssetDownloader {
         try? fileManager.removeItem(at: temporaryFileURL)
 
         let bytesReceived = fileSize(partialURL)
-        if let sizeMismatch = finalSizeMismatch(bytesReceived, expectedBytes: expectedBytes) {
+        // 硬校验只在我们有 server-authoritative 大小时才进行。
+        // 没拿到 Content-Length (e.g. ModelScope 某些时段, 代理 strip)
+        // 就信任下载字节数 — 比删了刚下完的文件再换源好得多。
+        if let authBytes = serverAuthoritativeBytes,
+           let sizeMismatch = finalSizeMismatch(bytesReceived, expectedBytes: authBytes) {
+            print("[ResumableAssetDownloader] file-size mismatch — deleting partial. " +
+                  "source=\(source.label) actual=\(bytesReceived) expected=\(authBytes) " +
+                  "tolerance_band=\(sizeMismatch.expected)")
             try? fileManager.removeItem(at: partialURL)
             try? fileManager.removeItem(at: resumeDataURL)
             let resetManifest = updatedManifest(
@@ -421,6 +446,9 @@ actor ResumableAssetDownloader {
                 actual: sizeMismatch.actual,
                 field: "file-size"
             )
+        } else if serverAuthoritativeBytes == nil {
+            print("[ResumableAssetDownloader] no Content-Length from \(source.label) — " +
+                  "skipping size validation, trusting received \(bytesReceived) bytes")
         }
 
         var currentManifest = (try? await manifestStore.readManifest(for: asset.id)) ?? manifest
@@ -516,14 +544,12 @@ actor ResumableAssetDownloader {
 
         guard let storedMetadata = entry.metadata else {
             if let headMetadata {
-                let expectedBytes = entry.expectedBytes ?? file.expectedSize
-                if let expectedBytes, let currentLength = headMetadata.contentLength, currentLength != expectedBytes {
-                    throw DownloadFailure.validatorMismatch(
-                        expected: "\(expectedBytes)",
-                        actual: "\(currentLength)",
-                        field: "Content-Length"
-                    )
-                }
+                // 之前没有存过 server-authoritative metadata, 不能拿 entry.expectedBytes
+                // (可能是常量) 跟当前 HEAD Content-Length 做严格相等比较 — 那是
+                // v1.3.2 之前那个 "下完了又重新下载" bug 的 resume 路径双胞胎。
+                // 信任 HEAD 给出的 Content-Length 作为新基线, 只保留越界保护:
+                // 如果服务器现在说文件比我们已下载的字节还小, 肯定是远端换了文件,
+                // restart 比 Range 请求 416 死循环安全。
                 if let currentLength = headMetadata.contentLength, currentLength < existingBytes {
                     throw DownloadFailure.validatorMismatch(
                         expected: ">= \(existingBytes)",
@@ -545,18 +571,35 @@ actor ResumableAssetDownloader {
             return (existingBytes, storedMetadata.sourceURL == source.url ? storedMetadata : nil, false)
         }
 
-        if let expectedBytes = file.expectedSize,
-           let currentLength = headMetadata?.contentLength,
-           currentLength == expectedBytes,
-           currentLength >= existingBytes {
-            return (existingBytes, headMetadata, false)
+        // storedMetadata != nil && headMetadata != nil && validators 不匹配:
+        // 远端可能换了文件 (ETag/Last-Modified/contentLength 跟之前不同)。
+        //
+        // 原来这里用 `currentLength == file.expectedSize` 做仲裁 — 拿写死的
+        // 常量当权威, 跟 v1.3.2 修的主 bug 同源思路。HF 上游重传或常量滞后
+        // 时这里仍会 throw → 删 partial → 重下死循环。
+        //
+        // 新策略: 服务器 HEAD 永远是最新的权威 — 只要它给出的 contentLength
+        // 容得下我们手上已经下了 existingBytes 的 partial, 就接受它作为新基线
+        // (validators 不匹配可能仅仅是 HF 改了 ETag 但内容前缀完全一致, Range
+        // 续传通常仍能成功; 即便失败也只是这一段重试)。
+        // 如果连 HEAD 的 contentLength 都装不下 existingBytes (远端文件确实变小了),
+        // restart 比 throw 强 — 用户至少能从 0 重新跑通, 而不是卡死在 mismatch。
+        if let currentLength = headMetadata?.contentLength {
+            if currentLength >= existingBytes {
+                return (existingBytes, headMetadata, false)
+            }
+            // HEAD 的 contentLength < existingBytes: 远端文件比 partial 还小, 必须重来。
+            return (0, headMetadata, true)
         }
 
-        throw DownloadFailure.validatorMismatch(
-            expected: storedMetadata.etag ?? storedMetadata.lastModified ?? "\(storedMetadata.contentLength ?? 0)",
-            actual: headMetadata?.etag ?? headMetadata?.lastModified ?? "\(headMetadata?.contentLength ?? 0)",
-            field: "metadata"
-        )
+        // HEAD 没给 contentLength: 既无法验证 partial 是否还能用, 也不知道远端实际
+        // 多大。保守起见 restart, 不要让 mismatch 把人卡死。
+        return (0, headMetadata, true)
+        //
+        // 历史: 这里曾经 throw validatorMismatch(expected: stored.etag/lastModified,
+        // actual: head.etag/lastModified, field: "metadata"), 但这等于"ETag 一变
+        // 就让用户卡死", 体感很糟。如果将来确实需要给强校验场景区分 "可接受换源" vs
+        // "必须人工介入", 应该走更细的策略类而不是直接 throw。
     }
 
     private func fetchHeadMetadata(for source: DownloadFile.Source) async throws -> DownloadFileMetadata {
@@ -571,7 +614,7 @@ actor ResumableAssetDownloader {
         guard (200..<400).contains(httpResponse.statusCode) else {
             throw DownloadFailure.httpStatus(httpResponse.statusCode)
         }
-        return makeMetadata(from: httpResponse, source: source, offset: 0, fallbackExpectedSize: nil)
+        return makeMetadata(from: httpResponse, source: source, offset: 0)
     }
 
     private func validatorsMatch(stored: DownloadFileMetadata, current: DownloadFileMetadata) -> Bool {
@@ -596,15 +639,38 @@ actor ResumableAssetDownloader {
         return false
     }
 
+    /// 把 HTTP 响应转换为 DownloadFileMetadata。
+    ///
+    /// **重要**: contentLength 字段只接受真正来自 HTTP 头 (Content-Length /
+    /// Content-Range) 的值, **不会从常量回填**。如果服务器/镜像没给 Content-Length
+    /// (e.g. 早期 ModelScope, 某些代理 strip 掉, chunked transfer encoding),
+    /// 这里返回 contentLength = nil, 由调用方决定如何处理。
+    ///
+    /// 这条规则是 v1.3.2 修复的关键: 之前这里有 `?? fallbackExpectedSize` 兜底,
+    /// 会把 PredefinedModels.swift 写死的"期望大小"(可能因 HF 重传而过时)
+    /// 静默注入 contentLength, 导致下游 finalSizeMismatch 用陈旧常量做硬校验,
+    /// 把刚下载完整的文件误判为大小不符 → 删除 partial → 自动换源重下 → 死循环。
+    ///
+    /// `requireContentRangeForTotalLength`: 当调用方使用 URLSession resumeData
+    /// 续传时, 我们传的 `offset` 是 0 (因为真实 offset 由 URLSession 内部决定,
+    /// 我们拿不到)。此时如果服务器只回 Content-Length 而没有 Content-Range,
+    /// `offset + responseLength` 算出来的是 *剩余字节数*, 不是 *整文件长度*。
+    /// 把这个错误值当 authoritative size 喂给 finalSizeMismatch, 会再次误删
+    /// 完整下载。所以 resumeData 路径必须把这个标志置 true, 让此函数仅在拿到
+    /// Content-Range total 时才填 contentLength, 避免被假权威污染。
     private func makeMetadata(
         from response: HTTPURLResponse,
         source: DownloadFile.Source,
         offset: Int64,
-        fallbackExpectedSize: Int64?
+        requireContentRangeForTotalLength: Bool = false
     ) -> DownloadFileMetadata {
         let responseLength = response.expectedContentLength > 0 ? response.expectedContentLength : nil
         let contentRangeTotal = header("Content-Range", from: response).flatMap(parseContentRangeTotal)
-        let totalLength = contentRangeTotal ?? responseLength.map { offset + $0 } ?? fallbackExpectedSize
+        // 严格 Content-Range 模式 (resumeData) — Content-Length 不可信, 只信 total。
+        // 否则 (普通 GET / 已知 offset 的 Range GET) 用 offset + Content-Length 兜底。
+        let totalLength: Int64? = requireContentRangeForTotalLength
+            ? contentRangeTotal
+            : (contentRangeTotal ?? responseLength.map { offset + $0 })
 
         return DownloadFileMetadata(
             sourceURL: source.url,
