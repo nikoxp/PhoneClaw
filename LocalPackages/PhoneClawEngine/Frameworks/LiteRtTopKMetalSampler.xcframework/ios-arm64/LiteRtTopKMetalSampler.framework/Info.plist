@@ -3,20 +3,20 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>CLiteRTLM</string>
+	<string>LiteRtTopKMetalSampler</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.google.CLiteRTLM</string>
+	<string>com.google.LiteRtTopKMetalSampler</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>CLiteRTLM</string>
+	<string>LiteRtTopKMetalSampler</string>
 	<key>CFBundlePackageType</key>
 	<string>FMWK</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1.0</string>
+	<string>1</string>
 	<key>MinimumOSVersion</key>
-	<string>13.0</string>
+	<string>17.0</string>
 </dict>
 </plist>
