@@ -54,6 +54,11 @@ final class LiteRTModelStore: ModelInstaller {
     // MARK: - ModelInstaller
 
     func install(model: ModelDescriptor) async throws {
+        // App Store Review Guidelines 2.5.2 红线: 禁止下载并执行可执行代码。
+        // 见 docs/RUNTIME_ARCHITECTURE_PLAN.md §10.3 — Native runtime 升级必须走 App 更新。
+        // ModelDescriptor 配错时 (e.g. 把 LiteRT framework 写成下载项) 在这里 fail-fast。
+        try Self.assertNoNativeBinaryDownloads(in: model)
+
         let modelID = model.id
 
         // 已安装
@@ -177,7 +182,7 @@ final class LiteRTModelStore: ModelInstaller {
                 if companion.isRequired {
                     throw error
                 } else {
-                    print("[LiteRTModelStore] WARN: optional companion \(companion.fileName) extract failed: \(error.localizedDescription) — model will load without it (fallback path may be slower)")
+                    PCLog.debug("[LiteRTModelStore] WARN: optional companion \(companion.fileName) extract failed: \(error.localizedDescription) — model will load without it (fallback path may be slower)")
                     // 失败的 .zip 留着不删, 用户下次 retry 可能能成功
                 }
             }
@@ -338,7 +343,7 @@ final class LiteRTModelStore: ModelInstaller {
         if model.expectedFileSize > 0, actualSize < model.expectedFileSize * 9 / 10 {
             let expectedMB = model.expectedFileSize / 1_000_000
             let actualMB = actualSize / 1_000_000
-            print("[Download] ❌ 文件大小异常: 期望 ~\(expectedMB)MB, 实际 \(actualMB)MB")
+            PCLog.debug("[Download] ❌ 文件大小异常: 期望 ~\(expectedMB)MB, 实际 \(actualMB)MB")
             try? FileManager.default.removeItem(at: url)
             try? await downloadCoordinator().purge(assetID: model.id)
             throw LiteRTDownloadError.invalidResponse
@@ -481,7 +486,7 @@ final class LiteRTModelStore: ModelInstaller {
                    size < model.expectedFileSize * 9 / 10 {
                     let expectedMB = model.expectedFileSize / 1_000_000
                     let actualMB = size / 1_000_000
-                    print("[ModelStore] ⚠️ \(model.fileName) 文件不完整 (\(actualMB)MB/\(expectedMB)MB)，已自动清理")
+                    PCLog.debug("[ModelStore] ⚠️ \(model.fileName) 文件不完整 (\(actualMB)MB/\(expectedMB)MB)，已自动清理")
                     try? FileManager.default.removeItem(at: path)
                     Task { try? await downloadCoordinator().purge(assetID: model.id) }
                     installStates[model.id] = .notInstalled
@@ -536,6 +541,42 @@ final class LiteRTModelStore: ModelInstaller {
             currentFile: model.fileName
         )
     }
+
+    // MARK: - App Store 合规防御
+
+    /// 禁止下载的文件后缀 — 任何 Mach-O / 动态库 / framework 都不能走下载链路。
+    /// 这些必须随 App 二进制 ship,见 App Store Review Guidelines 2.5.2。
+    private static let forbiddenDownloadExtensions: [String] = [
+        ".framework", ".xcframework", ".dylib", ".so", ".a", ".bundle"
+    ]
+
+    /// 检查 ModelDescriptor 及其 companion files,确保没有 native binary。
+    /// 配错就抛 fatalError — 这是架构约束,运行时拒绝绕过。
+    static func assertNoNativeBinaryDownloads(in model: ModelDescriptor) throws {
+        let allFileNames = [model.fileName] + model.companionFiles.map(\.fileName)
+        for fileName in allFileNames {
+            let lowered = fileName.lowercased()
+            for ext in forbiddenDownloadExtensions where lowered.hasSuffix(ext) {
+                let detail = "ModelDescriptor[\(model.id)] declares download of native binary '\(fileName)'. " +
+                             "Native runtime (frameworks/dylibs) must ship with the App, not be downloaded. " +
+                             "See App Store Review Guidelines 2.5.2 / RUNTIME_ARCHITECTURE_PLAN.md §10.3."
+                assertionFailure(detail)
+                throw InstallerError.forbiddenNativeBinaryDownload(detail)
+            }
+        }
+    }
+}
+
+/// Installer-level structured errors.
+enum InstallerError: LocalizedError {
+    case forbiddenNativeBinaryDownload(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .forbiddenNativeBinaryDownload(let detail):
+            return detail
+        }
+    }
 }
 
 private actor LiteRTDownloadObserver: DownloadObserver {
@@ -556,7 +597,7 @@ private actor LiteRTDownloadObserver: DownloadObserver {
         attempt: Int,
         error: DownloadFailure
     ) async {
-        print("[Download] ❌ \(source.label) attempt \(attempt) failed for \(filePath): \(error)")
+        PCLog.debug("[Download] ❌ \(source.label) attempt \(attempt) failed for \(filePath): \(error)")
     }
 
     func onSourceSwitch(
@@ -568,14 +609,14 @@ private actor LiteRTDownloadObserver: DownloadObserver {
     ) async {
         let fromLabel = from?.label ?? "none"
         if let reason {
-            print("[Download] Switching source for \(filePath): \(fromLabel) → \(to.label), reason=\(reason)")
+            PCLog.debug("[Download] Switching source for \(filePath): \(fromLabel) → \(to.label), reason=\(reason)")
         } else {
-            print("[Download] Switching source for \(filePath): \(fromLabel) → \(to.label)")
+            PCLog.debug("[Download] Switching source for \(filePath): \(fromLabel) → \(to.label)")
         }
     }
 
     func onFailure(assetID: String, failure: DownloadFailure) async {
-        print("[Download] ❌ asset \(assetID) failed: \(failure)")
+        PCLog.debug("[Download] ❌ asset \(assetID) failed: \(failure)")
     }
 }
 

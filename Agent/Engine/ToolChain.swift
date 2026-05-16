@@ -206,21 +206,21 @@ extension AgentEngine {
 
         if trimmed.isEmpty {
             return tr(
-                "工具 \(toolName) 已执行，但没有返回内容。",
-                "Tool \(toolName) executed but returned no content."
+                "已完成，但没有返回可展示的内容。",
+                "Done, but there was no displayable result."
             )
         }
 
         if LanguageService.shared.current.isChinese {
             return """
-            工具 \(toolName) 已执行完成，但模型没有生成最终回答。
-            工具返回结果：
+            已完成，不过我没能整理出自然回复。
+            结果如下：
             \(trimmed)
             """
         } else {
             return """
-            Tool \(toolName) finished executing, but the model did not produce a final answer.
-            Tool result:
+            Done, but I could not compose a natural reply.
+            Result:
             \(trimmed)
             """
         }
@@ -228,8 +228,8 @@ extension AgentEngine {
 
     func fallbackReplyForEmptySkillFollowUp(skillName: String) -> String {
         tr(
-            "Skill \(skillName) 已加载，但模型没有继续生成工具调用或最终回答。请重试，或把问题说得更具体一些。",
-            "Skill \(skillName) is loaded, but the model did not continue with a tool call or final answer. Please retry, or rephrase the question more specifically."
+            "我已经准备好这项能力了，但还缺少下一步。请把需求说得更具体一些。",
+            "I'm ready to use this capability, but I need a more specific request."
         )
     }
 
@@ -267,7 +267,7 @@ extension AgentEngine {
         let effectiveMax = (MemoryStats.headroomMB < 1500) ? min(maxRounds, 6) : maxRounds
         guard round <= effectiveMax else {
             log("[Agent] 达到最大工具链轮数 \(effectiveMax) (memory-aware)")
-            isProcessing = false
+            finishTurn()
             return
         }
 
@@ -302,7 +302,7 @@ extension AgentEngine {
                 let followUpIndex = messages.count - 1
 
                 guard let nextText = await streamLLM(prompt: followUpPrompt, msgIndex: followUpIndex, images: images) else {
-                    isProcessing = false
+                    finishTurn()
                     return
                 }
 
@@ -318,7 +318,7 @@ extension AgentEngine {
                     )
                 } else {
                     messages[followUpIndex].update(content: cleanOutput(nextText))
-                    isProcessing = false
+                    finishTurn()
                 }
                 return
             }
@@ -329,7 +329,7 @@ extension AgentEngine {
             if let lastAssistant = messages.lastIndex(where: { $0.role == .assistant }) {
                 messages[lastAssistant].update(content: cleaned.isEmpty ? PromptLocale.current.emptyReplyPlaceholder : cleaned)
             }
-            isProcessing = false
+            finishTurn()
             return
         }
 
@@ -372,7 +372,7 @@ extension AgentEngine {
             let followUpIndex = messages.count - 1
 
             guard let nextText = await streamLLM(prompt: followUpPrompt, msgIndex: followUpIndex, images: images) else {
-                isProcessing = false
+                finishTurn()
                 return
             }
 
@@ -386,7 +386,7 @@ extension AgentEngine {
             } else {
                 let cleaned = cleanOutput(nextText)
                 messages[followUpIndex].update(content: cleaned.isEmpty ? PromptLocale.current.emptyReplyPlaceholder : cleaned)
-                isProcessing = false
+                finishTurn()
             }
             return
         }
@@ -424,7 +424,7 @@ extension AgentEngine {
             }
 
             guard !allInstructions.isEmpty else {
-                isProcessing = false
+                finishTurn()
                 return
             }
 
@@ -468,7 +468,7 @@ extension AgentEngine {
             case .needsClarification(let clarification):
                 messages.append(ChatMessage(role: .assistant, content: clarification))
                 markSkillsDone(loadedDisplayNames)
-                isProcessing = false
+                finishTurn()
                 return
 
             case .failed:
@@ -503,7 +503,7 @@ extension AgentEngine {
             let followUpIndex = messages.count - 1
 
             guard let nextText = await streamLLM(prompt: followUpPrompt, msgIndex: followUpIndex, images: images) else {
-                isProcessing = false
+                finishTurn()
                 return
             }
 
@@ -530,7 +530,7 @@ extension AgentEngine {
                     )
 
                     guard let retryText = await streamLLM(prompt: retryPrompt, msgIndex: followUpIndex, images: images) else {
-                        isProcessing = false
+                        finishTurn()
                         return
                     }
 
@@ -557,12 +557,12 @@ extension AgentEngine {
                             : retryCleaned
                         messages[followUpIndex].update(content: finalReply)
                         markSkillsDone(loadedDisplayNames)
-                        isProcessing = false
+                        finishTurn()
                     }
                 } else {
                     messages[followUpIndex].update(content: cleaned)
                     markSkillsDone(loadedDisplayNames)
-                    isProcessing = false
+                    finishTurn()
                 }
             }
             return
@@ -590,7 +590,7 @@ extension AgentEngine {
                 "⚠️ 未知工具: \(call.name)",
                 "⚠️ Unknown tool: \(call.name)"
             )))
-            isProcessing = false
+            finishTurn()
             return
         }
 
@@ -601,7 +601,7 @@ extension AgentEngine {
                 "⚠️ Skill \(displayName) 未启用",
                 "⚠️ Skill \(displayName) is not enabled"
             )))
-            isProcessing = false
+            finishTurn()
             return
         }
 
@@ -624,7 +624,7 @@ extension AgentEngine {
 
             if toolRegistry.shouldSkipFollowUp(for: call.name) {
                 messages.append(ChatMessage(role: .assistant, content: canonicalResult.summary))
-                isProcessing = false
+                finishTurn()
                 return
             }
 
@@ -641,7 +641,7 @@ extension AgentEngine {
             let followUpIndex = messages.count - 1
 
             guard let nextText = await streamLLM(prompt: followUpPrompt, msgIndex: followUpIndex, images: images) else {
-                isProcessing = false
+                finishTurn()
                 return
             }
 
@@ -665,15 +665,15 @@ extension AgentEngine {
                 } else {
                     messages[followUpIndex].update(content: cleaned)
                 }
-                isProcessing = false
+                finishTurn()
             }
         } catch {
             messages[cardIndex].update(role: .system, content: "done", skillName: displayName)
             messages.append(ChatMessage(role: .system, content: tr(
-                "❌ Tool 执行失败: \(error)",
-                "❌ Tool execution failed: \(error)"
+                "这项操作没有完成：\(error.localizedDescription)",
+                "This action could not be completed: \(error.localizedDescription)"
             )))
-            isProcessing = false
+            finishTurn()
         }
     }
 }

@@ -289,7 +289,7 @@ extension AgentEngine {
                 "⚠️ 当前没有可用于编排的 Skill。",
                 "⚠️ No Skills are currently available for orchestration."
             )))
-            isProcessing = false
+            finishTurn()
             return true
         }
 
@@ -348,7 +348,7 @@ extension AgentEngine {
            !clarificationLooksFake,
            !hasSkills {
             messages.append(ChatMessage(role: .assistant, content: clar))
-            isProcessing = false
+            finishTurn()
             return true
         }
 
@@ -386,7 +386,7 @@ extension AgentEngine {
                 messages.append(ChatMessage(role: .assistant, content: message))
             }
             markSkillsDone(Array(loadedDisplayNames.values))
-            isProcessing = false
+            finishTurn()
         }
 
         while !remainingSkillIds.isEmpty, planningPass < 3 {
@@ -437,7 +437,7 @@ extension AgentEngine {
             if let clarification = validatedPlan.needsClarification,
                !clarification.isEmpty {
                 messages.append(ChatMessage(role: .assistant, content: clarification))
-                isProcessing = false
+                finishTurn()
                 return true
             }
 
@@ -628,8 +628,8 @@ extension AgentEngine {
                 } catch {
                     messages[cardIndex].update(role: .system, content: "done", skillName: displayName)
                     finishPlanning(with: tr(
-                        "❌ Tool 执行失败:\(error.localizedDescription)",
-                        "❌ Tool execution failed: \(error.localizedDescription)"
+                        "这项操作没有完成：\(error.localizedDescription)",
+                        "This action could not be completed: \(error.localizedDescription)"
                     ))
                     return true
                 }
@@ -658,7 +658,7 @@ extension AgentEngine {
 
         guard let nextText = await streamLLM(prompt: followUpPrompt, msgIndex: followUpIndex, images: images) else {
             markSkillsDone(Array(loadedDisplayNames.values))
-            isProcessing = false
+            finishTurn()
             return true
         }
 
@@ -686,7 +686,7 @@ extension AgentEngine {
 
         messages[followUpIndex].update(content: finalReply)
         markSkillsDone(Array(loadedDisplayNames.values))
-        isProcessing = false
+        finishTurn()
         return true
     }
 }

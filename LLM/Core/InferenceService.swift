@@ -35,8 +35,15 @@ public protocol InferenceService: AnyObject {
     /// 加载指定模型。幂等 — 已加载同一模型时 no-op。
     func load(modelID: String) async throws
 
-    /// 卸载当前模型，释放内存。
+    /// 卸载当前模型，释放内存。同步版本。
     func unload()
+
+    /// 异步卸载当前模型。
+    ///
+    /// 用于需要确保 teardown 完全完成后再继续的场景（如后端切换）。
+    /// 默认实现调用同步 `unload()` — 已有 `destroySynchronously()` 实现的
+    /// 后端（如 LiteRTBackend）不需要额外实现。
+    func unloadAsync() async
 
     /// 取消当前正在进行的推理。
     func cancel()
@@ -110,6 +117,10 @@ public protocol InferenceService: AnyObject {
     /// 推理统计
     var stats: InferenceStats { get }
 
+    /// 当前已加载模型的能力查询。nil = 无模型加载。
+    /// Coordinator 据此判断状态转移（如是否支持 GPU、多模态等）。
+    var activeCapabilities: ModelCapabilities? { get }
+
     // MARK: - Sampling Configuration
 
     var samplingTopK: Int { get set }
@@ -166,6 +177,8 @@ public protocol InferenceService: AnyObject {
 // MARK: - Default no-op implementations for backends without KV session
 
 public extension InferenceService {
+    func unloadAsync() async { unload() }
+    var activeCapabilities: ModelCapabilities? { nil }
     var lastKVPrefillTokens: Int { 0 }
     var kvSessionActive: Bool { false }
     var sessionHasContext: Bool { false }
@@ -265,8 +278,8 @@ private func shouldFlushCallbackBuffer(
 
 private func streamWithBatchedCallbacks(
     source: AsyncThrowingStream<String, Error>,
-    onToken: @escaping @Sendable (String) -> Void,
-    onComplete: @escaping @Sendable (Result<String, Error>) -> Void
+    onToken: @escaping @MainActor @Sendable (String) -> Void,
+    onComplete: @escaping @MainActor @Sendable (Result<String, Error>) -> Void
 ) {
     Task {
         var fullResponse = ""
@@ -324,8 +337,8 @@ public extension InferenceService {
 
     func generate(
         prompt: String,
-        onToken: @escaping @Sendable (String) -> Void,
-        onComplete: @escaping @Sendable (Result<String, Error>) -> Void
+        onToken: @escaping @MainActor @Sendable (String) -> Void,
+        onComplete: @escaping @MainActor @Sendable (Result<String, Error>) -> Void
     ) {
         streamWithBatchedCallbacks(
             source: generate(prompt: prompt),
@@ -339,8 +352,8 @@ public extension InferenceService {
         audios: [AudioInput] = [],
         prompt: String,
         systemPrompt: String = "",
-        onToken: @escaping @Sendable (String) -> Void,
-        onComplete: @escaping @Sendable (Result<String, Error>) -> Void
+        onToken: @escaping @MainActor @Sendable (String) -> Void,
+        onComplete: @escaping @MainActor @Sendable (Result<String, Error>) -> Void
     ) {
         streamWithBatchedCallbacks(
             source: generateMultimodal(

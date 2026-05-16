@@ -91,6 +91,46 @@ private let _preloadMetalSamplerOnce: Void = {
     _preloadCompanionFramework("LiteRtTopKMetalSampler", category: "Sampler")
 }()
 
+// MARK: - Public Bootstrap API
+//
+// Exposes the process-level GPU accelerator preload as a callable function
+// for the app's @main init(). The underlying dispatch_once semantics of
+// `_preloadGpuAcceleratorOnce` make repeated calls safe (no-op after first).
+
+/// Process-level runtime initialization namespace for LiteRT.
+///
+/// Call `LiteRTRuntime.preloadGpuAccelerator()` once at app startup,
+/// before any `LiteRTLMEngine.load()` call. This registers the Metal
+/// GPU backend into LiteRT's process-level singleton Environment.
+///
+/// The Environment seals on the first `litert_lm_engine_create` call —
+/// if GPU isn't registered before that, no GPU engine can ever be created
+/// in this process.
+public enum LiteRTRuntime {
+
+    /// Whether `preloadGpuAccelerator()` has been called.
+    /// Written exactly once at process startup; read-only afterwards.
+    public nonisolated(unsafe) static private(set) var isGpuAcceleratorPreloaded = false
+
+    /// Timestamp (CFAbsoluteTime) when preload completed, or 0 if not yet called.
+    /// Written exactly once at process startup; read-only afterwards.
+    public nonisolated(unsafe) static private(set) var preloadTimestamp: CFAbsoluteTime = 0
+
+    /// Synchronously preload the Metal GPU accelerator framework via dlopen.
+    ///
+    /// Idempotent — safe to call multiple times (dispatch_once internally).
+    /// Blocks the calling thread for ~2-5 ms (one dlopen of ~5 MB framework).
+    ///
+    /// Must be called from `@main init()`, before any `LiteRTLMEngine.load()`.
+    public static func preloadGpuAccelerator() {
+        _ = _preloadGpuAcceleratorOnce
+        if !isGpuAcceleratorPreloaded {
+            preloadTimestamp = CFAbsoluteTimeGetCurrent()
+            isGpuAcceleratorPreloaded = true
+        }
+    }
+}
+
 /// Swift wrapper for Google's LiteRT-LM on-device inference engine.
 ///
 /// Supports text generation (Session API) and multimodal inference — vision
@@ -274,12 +314,17 @@ public final class LiteRTLMEngine: @unchecked Sendable {
             throw LiteRTLMError.modelNotFound
         }
 
-        // Force companion dylib preloads before any runtime C API call.
-        // CPU backend: no-ops. GPU backend: registers the Metal backend and
-        // the sampler dylib so subsequent runtime-side dlopens resolve.
-        if backendStr == "gpu" {
-            _ = _preloadGpuAcceleratorOnce
-            _ = _preloadMetalSamplerOnce
+        // GPU accelerator MUST be preloaded before any engine_create call.
+        // The app's @main init() calls LiteRTBootstrap.bootstrap() which calls
+        // LiteRTRuntime.preloadGpuAccelerator(). Assert here as a safety net.
+        //
+        // If somehow bootstrap was missed, fall back to preloading here —
+        // better late than never, though the Environment may already be sealed
+        // if this isn't the first load() call in the process.
+        if !LiteRTRuntime.isGpuAcceleratorPreloaded {
+            Self.log.fault("LiteRTRuntime.preloadGpuAccelerator() was NOT called before load()! Falling back to inline preload. Fix: call LiteRTBootstrap.bootstrap() in @main init().")
+            assertionFailure("LiteRTRuntime.preloadGpuAccelerator() must be called before any LiteRTLMEngine.load(). Add LiteRTBootstrap.bootstrap() to @main init().")
+            LiteRTRuntime.preloadGpuAccelerator()
         }
 
         do {
@@ -354,11 +399,21 @@ public final class LiteRTLMEngine: @unchecked Sendable {
                             settings, speculativeEnabled
                         )
 
+                        Self.log.info("Creating engine: backend=\(backendStr, privacy: .public) maxTokens=\(maxTokensValue) cache=\(cacheDir, privacy: .public)")
                         guard let createdEngine = litert_lm_engine_create(settings) else {
                             litert_lm_engine_settings_delete(settings)
-                            throw LiteRTLMError.engineCreationFailed("litert_lm_engine_create returned NULL")
+                            throw LiteRTLMError.engineCreationFailed("litert_lm_engine_create returned NULL — Metal engine init failed (check memory / shader compilation logs above)")
                         }
                         litert_lm_engine_settings_delete(settings)
+
+                        // Engine created successfully — now safe to preload
+                        // the optional TopK Metal sampler. Its duplicate ObjC
+                        // classes with the accelerator are harmless post-init
+                        // because the SRLRegistry already has the Metal
+                        // accelerator registered.
+                        if backendStr == "gpu" {
+                            _ = _preloadMetalSamplerOnce
+                        }
 
                         continuation.resume(returning: createdEngine)
                     } catch {
@@ -383,7 +438,26 @@ public final class LiteRTLMEngine: @unchecked Sendable {
     /// Unload the model to free memory.
     @MainActor
     public func unload() {
-        inferenceQueue.sync {
+        destroySynchronously()
+        status = .notLoaded
+        Self.log.info("Model unloaded")
+    }
+
+    /// Synchronously release all C resources on the inference queue.
+    ///
+    /// Unlike `unload()` (which is `@MainActor`), this can be called from
+    /// **any** context. Blocks the caller until `litert_lm_engine_delete`
+    /// completes, guaranteeing that Metal buffers, mmap regions, and GPU
+    /// command queues are fully torn down before the method returns.
+    ///
+    /// This is critical for CPU↔GPU backend switching: the old engine's
+    /// resources MUST be released before a new engine is created, otherwise
+    /// `litert_lm_engine_create` fails because the GPU finds stale Metal
+    /// allocations from the previous engine.
+    ///
+    /// Safe to call multiple times — subsequent calls are no-ops.
+    public func destroySynchronously() {
+        inferenceQueue.sync { [self] in
             if let s = chatSession {
                 litert_lm_session_delete(s)
                 chatSession = nil
@@ -405,8 +479,6 @@ public final class LiteRTLMEngine: @unchecked Sendable {
             if let eng = engine { litert_lm_engine_delete(eng) }
             engine = nil
         }
-        status = .notLoaded
-        Self.log.info("Model unloaded")
     }
 
     // MARK: - Text Generation (Session API)

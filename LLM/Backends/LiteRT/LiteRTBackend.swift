@@ -122,19 +122,19 @@ final class LiteRTBackend: InferenceService {
     /// (通常通过 `AgentEngine.reloadModel()`).
     func setPreferredBackend(_ backend: String) {
         guard backend == "gpu" || backend == "cpu" else {
-            print("[LiteRT] Ignoring invalid backend preference: \(backend)")
+            PCLog.debug("[LiteRT] Ignoring invalid backend preference: \(backend)")
             return
         }
         guard self.preferredBackend != backend else { return }
         self.preferredBackend = backend
         self.stats.backend = "litert-\(backend)"
-        print("[LiteRT] Preferred backend set to \(backend) (takes effect on next load)")
+        PCLog.debug("[LiteRT] Preferred backend set to \(backend) (takes effect on next load)")
     }
 
     func setEnableSpeculativeDecoding(_ enabled: Bool) {
         guard self.enableSpeculativeDecoding != enabled else { return }
         self.enableSpeculativeDecoding = enabled
-        print("[LiteRT] MTP speculative decoding \(enabled ? "enabled" : "disabled") (takes effect on next load)")
+        PCLog.debug("[LiteRT] MTP speculative decoding \(enabled ? "enabled" : "disabled") (takes effect on next load)")
     }
 
     /// 便捷 init: 使用默认路径 (Documents/models/<fileName>)
@@ -204,11 +204,11 @@ final class LiteRTBackend: InferenceService {
             //
             // 2026-04-25: E4B 从 2048 提到 4096. 之前 2048 是为了卡 Sideloadly
             // 免费签名 jetsam 阈值 (~3-4 GB), 但代价是英文 SKILL 触发首轮
-            // hard-reject ("Context is too long"), 因为英文 system prompt
-            // 比中文长 ~300 token + contacts 等厚 schema 工具就把 1300 总
-            // 预算推爆. Sideloadly 用户 E4B 本来内存就紧 (推荐用 E2B), 这
-            // 次接受 Sideloadly E4B 不能用换 Xcode 直装 / 正式签用户的英
-            // 文 skill 体验. Sideloadly 用户改用 E2B (4096 KV 一直能用).
+            // hard-reject. Sideloadly 用户 E4B 本来内存就紧 (推荐用 E2B).
+            //
+            // GPU 也用 4096: Gemma 4 E2B .litertlm 的 compiled shape 按
+            // magic_number=32003 → target=4096 配置, GPU compiled model 路径
+            // 下 KV 维度必须匹配此值, 否则 CompiledModel::Create 直接失败。
             let maxKVTokens: Int = 4096
             let (visionBackend, audioBackend): (String?, String?) = {
                 switch mode {
@@ -232,7 +232,7 @@ final class LiteRTBackend: InferenceService {
             // 定位 V2 shader 该用什么 stride / 索引公式。
             let useSpeculativeDecoding = enableSpeculativeDecoding && mode == .textOnly
             let backendLabel = "litert-\(preferredBackend)\(useSpeculativeDecoding ? "+mtp" : "")"
-            print("[LiteRT] Loading model=\(modelID) backend=\(preferredBackend) mode=\(mode) mtp=\(useSpeculativeDecoding ? "on" : "off")")
+            PCLog.debug("[LiteRT] Loading model=\(modelID) backend=\(preferredBackend) mode=\(mode) mtp=\(useSpeculativeDecoding ? "on" : "off")")
             let newEngine = LiteRTLMEngine(
                 modelPath: modelPath,
                 backend: preferredBackend,    // "gpu" 或 "cpu", 从 ConfigurationsView 选择驱动
@@ -260,7 +260,7 @@ final class LiteRTBackend: InferenceService {
         self.lastKVPrefillTokens = 0
         self.pendingTextSessionRestore = false
         self.sessionGroupManagedMultimodal = false
-        print("[LiteRT] Persistent session opened for KV cache reuse (mode=\(mode))")
+        PCLog.debug("[LiteRT] Persistent session opened for KV cache reuse (mode=\(mode))")
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
             self.stats.loadTimeMs = elapsed
@@ -277,42 +277,90 @@ final class LiteRTBackend: InferenceService {
             isLoading = false
             isLoaded = false
 
-            // 模型加载失败 → 文件可能损坏，自动清理并恢复下载按钮
             let descriptor = ModelDescriptor.allModels.first { $0.id == modelID }
             let displayName = descriptor?.displayName ?? modelID
-            print("[LiteRT] ❌ 加载 \(displayName) 失败: \(error.localizedDescription)")
-            print("[LiteRT] 自动清理可能损坏的模型文件...")
-            try? FileManager.default.removeItem(at: modelPath)
-            print("[LiteRT] 已删除: \(modelPath.lastPathComponent)")
-            // 通知外部 store 刷新状态 (下次 refreshInstallStates 时会标记为 notInstalled)
-            NotificationCenter.default.post(
-                name: Notification.Name("LiteRTModelCorrupt"),
-                object: nil,
-                userInfo: ["modelID": modelID]
-            )
+            PCLog.debug("[LiteRT] ❌ 加载 \(displayName) 失败: \(error.localizedDescription)")
 
-            statusMessage = tr(
-                "❌ \(displayName) 文件损坏，请重新下载",
-                "❌ \(displayName) file is corrupt. Please download it again."
-            )
+            // 判断是否真的是文件问题 — 只有文件大小明显不对 (< 90% expectedFileSize)
+            // 时才删除。GPU 引擎创建失败 (内存不足、Metal 初始化错误等) 不应该删除
+            // 完好的模型文件, 否则用户切换 CPU↔GPU 失败后会被迫重新下载几 GB 模型。
+            var shouldDeleteFile = false
+            if let expected = descriptor?.expectedFileSize, expected > 0 {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: modelPath.path)
+                let actualSize = (attrs?[.size] as? Int64) ?? 0
+                if actualSize < expected * 9 / 10 {
+                    shouldDeleteFile = true
+                    PCLog.debug("[LiteRT] 文件大小异常 (\(actualSize)/\(expected)), 判定为损坏, 自动清理")
+                }
+            }
+
+            if shouldDeleteFile {
+                try? FileManager.default.removeItem(at: modelPath)
+                PCLog.debug("[LiteRT] 已删除: \(modelPath.lastPathComponent)")
+                NotificationCenter.default.post(
+                    name: Notification.Name("LiteRTModelCorrupt"),
+                    object: nil,
+                    userInfo: ["modelID": modelID]
+                )
+                statusMessage = tr(
+                    "❌ \(displayName) 文件损坏，请重新下载",
+                    "❌ \(displayName) file is corrupt. Please download it again."
+                )
+            } else {
+                // 文件完好但引擎加载失败 — 可能是 GPU 不支持、内存不足等运行时问题,
+                // 保留文件, 用户可以换回 CPU 或释放内存后重试。
+                PCLog.debug("[LiteRT] 文件完好 (\(modelPath.lastPathComponent)), 保留不删除")
+                let reason = error.localizedDescription
+                if preferredBackend == "gpu" {
+                    // GPU-specific guidance: the most common failure is Metal
+                    // engine init failing due to memory or shader issues.
+                    statusMessage = tr(
+                        "❌ \(displayName) GPU 加载失败\nMetal 引擎初始化未成功，可能是设备内存不足。\n请切换到 CPU 模式重试。",
+                        "❌ \(displayName) GPU load failed\nMetal engine init failed — likely insufficient memory.\nPlease switch to CPU mode."
+                    )
+                } else {
+                    statusMessage = tr(
+                        "❌ \(displayName) 加载失败: \(reason)\n模型文件已保留，可尝试切换到 CPU 重试。",
+                        "❌ \(displayName) failed to load: \(reason)\nModel file kept. Try switching to CPU."
+                    )
+                }
+            }
+
             PCLog.modelLoadFailed(modelID: modelID, reason: error.localizedDescription)
             throw error
         }
     }
 
+    /// Async unload — explicit completion semantics for Coordinator.switchBackend().
+    /// 实际实现走同步路径 (`destroySynchronously()` 同步阻塞直到 C 层资源全释放),
+    /// 但暴露 async 签名让 Coordinator 拿到明确的 "await unload 完成" 信号。
+    /// 见 docs/RUNTIME_ARCHITECTURE_PLAN.md §3.2 InferenceService 协议演进。
+    func unloadAsync() async {
+        unload()
+    }
+
     func unload() {
-        engine?.closeSession()
-        engine?.closeConversation()
+        // Synchronously destroy the C engine and all its Metal/GPU resources.
+        // This MUST complete before we return, because the caller (reloadModel)
+        // immediately creates a new engine afterwards. If the old engine's
+        // resources are still alive, litert_lm_engine_create will fail —
+        // this was the root cause of CPU→GPU switch failures ("engine_create
+        // returned NULL" on hot switch, but works on cold start).
+        //
+        // Previously this used `Task { @MainActor in engine?.unload() }` +
+        // `engine = nil` — but the Task was fire-and-forget, and engine was
+        // niled before the Task ran, making the unload a no-op. The actual
+        // cleanup only happened in deinit (async, on a DIFFERENT serial queue
+        // than the new engine), creating a race condition.
+        engine?.destroySynchronously()
+        engine = nil
+
         kvSessionActive = false
         liveModeActive = false
         lastModelOutput = ""
         pendingTextSessionRestore = false
         sessionGroupManagedMultimodal = false
         currentEngineMode = .textOnly  // reset 到默认, 下次 load 会重新设置
-        Task { @MainActor in
-            engine?.unload()
-        }
-        engine = nil
         loadedModelID = nil
         isLoaded = false
         isGenerating = false
@@ -342,11 +390,11 @@ final class LiteRTBackend: InferenceService {
         }
         guard currentEngineMode != target else { return }
 
-        print("[LiteRT] Engine mode switch: \(currentEngineMode) → \(target) (reloading engine…)")
+        PCLog.debug("[LiteRT] Engine mode switch: \(currentEngineMode) → \(target) (reloading engine…)")
         let reloadStart = CFAbsoluteTimeGetCurrent()
         try await load(modelID: modelID, mode: target)
         let elapsed = (CFAbsoluteTimeGetCurrent() - reloadStart) * 1000
-        print("[LiteRT] Engine mode switched to \(target) in \(Int(elapsed))ms")
+        PCLog.debug("[LiteRT] Engine mode switched to \(target) in \(Int(elapsed))ms")
     }
 
     /// 显式降级回 text-only. 省 ~800 MB pinned memory (SigLIP + USM encoder).
@@ -357,7 +405,7 @@ final class LiteRTBackend: InferenceService {
         do {
             try await ensureEngineMode(.textOnly)
         } catch {
-            print("[LiteRT] revertToTextOnly failed: \(error.localizedDescription)")
+            PCLog.debug("[LiteRT] revertToTextOnly failed: \(error.localizedDescription)")
         }
     }
 
@@ -378,9 +426,9 @@ final class LiteRTBackend: InferenceService {
                 maxTokens: Int(maxOutputTokens)
             )
             kvSessionActive = true
-            print("[LiteRT] KV session reset")
+            PCLog.debug("[LiteRT] KV session reset")
         } catch {
-            print("[LiteRT] KV session reset failed: \(error)")
+            PCLog.debug("[LiteRT] KV session reset failed: \(error)")
         }
     }
 
@@ -409,14 +457,14 @@ final class LiteRTBackend: InferenceService {
         pendingTextSessionRestore = false
         sessionGroupManagedMultimodal = false
 
-        print("[LiteRT] 📋 Live system prompt (\(systemPrompt?.count ?? 0) chars): \"\(systemPrompt?.prefix(200) ?? "nil")\"")
+        PCLog.debug("[LiteRT] 📋 Live system prompt (\(systemPrompt?.count ?? 0) chars): \"\(systemPrompt?.prefix(200) ?? "nil")\"")
         try await engine.openConversation(
             systemMessage: systemPrompt,
             temperature: samplingTemperature,
             maxTokens: Int(maxOutputTokens)
         )
         liveModeActive = true
-        print("[LiteRT] Persistent Live conversation opened")
+        PCLog.debug("[LiteRT] Persistent Live conversation opened")
     }
 
     func exitLiveMode() async {
@@ -446,9 +494,9 @@ final class LiteRTBackend: InferenceService {
                 maxTokens: Int(maxOutputTokens)
             )
             kvSessionActive = true
-            print("[LiteRT] Persistent text session restored after Live")
+            PCLog.debug("[LiteRT] Persistent text session restored after Live")
         } catch {
-            print("[LiteRT] Failed to restore text session after Live: \(error)")
+            PCLog.debug("[LiteRT] Failed to restore text session after Live: \(error)")
         }
     }
 
@@ -483,11 +531,11 @@ final class LiteRTBackend: InferenceService {
                 sessionHasContext = false
                 lastModelOutput = ""
                 lastKVPrefillTokens = 0
-                print("[LiteRT] Closed text session for multimodal group transition")
+                PCLog.debug("[LiteRT] Closed text session for multimodal group transition")
             }
         case (.multimodal, .text):
             if pendingTextSessionRestore {
-                print("[LiteRT] Text session lazy reopen pending after multimodal")
+                PCLog.debug("[LiteRT] Text session lazy reopen pending after multimodal")
             }
         default:
             break
@@ -514,9 +562,9 @@ final class LiteRTBackend: InferenceService {
             )
             kvSessionActive = true
             pendingTextSessionRestore = false
-            print("[LiteRT] Text session restored after multimodal")
+            PCLog.debug("[LiteRT] Text session restored after multimodal")
         } catch {
-            print("[LiteRT] Failed to restore text session: \(error)")
+            PCLog.debug("[LiteRT] Failed to restore text session: \(error)")
             // 下次 generate() 检测到 !kvSessionActive 会自动重建
         }
     }
@@ -551,14 +599,14 @@ final class LiteRTBackend: InferenceService {
 
                 do {
                     if self.pendingTextSessionRestore {
-                        print("[LiteRT] Lazy reopening text session after multimodal group transition")
+                        PCLog.debug("[LiteRT] Lazy reopening text session after multimodal group transition")
                     }
 
                     if self.pendingTextSessionRestore || !self.kvSessionActive {
                         await self.resetKVSession()
                     } else if self.sessionHasContext,
                               Self.promptRequiresFreshKVSession(prompt) {
-                        print("[LiteRT] Full prompt with active KV session detected — resetting session before generation")
+                        PCLog.debug("[LiteRT] Full prompt with active KV session detected — resetting session before generation")
                         await self.resetKVSession()
                     }
 
@@ -698,7 +746,7 @@ final class LiteRTBackend: InferenceService {
             sessionHasContext = false
             lastModelOutput = ""
             lastKVPrefillTokens = 0
-            print("[LiteRT] Closed text session for multimodal inference")
+            PCLog.debug("[LiteRT] Closed text session for multimodal inference")
         }
 
         isGenerating = true
@@ -740,9 +788,9 @@ final class LiteRTBackend: InferenceService {
                         let durationSec = audio.rawFileData != nil
                             ? Double(audiosData[i].count) / (16000 * 2 + 44) * (Double(audiosData[i].count - 44) / (16000 * 2))
                             : Double(audio.samples.count) / max(audio.sampleRate, 1)
-                        print("[LiteRT] audio[\(i)] source=\(isRaw ? "rawFile" : "pcmEncode") wavBytes=\(audiosData[i].count) dur=\(String(format: "%.2f", audio.sampleRate > 0 ? Double(max(audio.samples.count, audiosData[i].count / 2)) / audio.sampleRate : 0))s")
+                        PCLog.debug("[LiteRT] audio[\(i)] source=\(isRaw ? "rawFile" : "pcmEncode") wavBytes=\(audiosData[i].count) dur=\(String(format: "%.2f", audio.sampleRate > 0 ? Double(max(audio.samples.count, audiosData[i].count / 2)) / audio.sampleRate : 0))s")
                     }
-                    print("[LiteRT] images=\(imagesData.count) audios=\(audios.count) promptChars=\(fullPrompt.count) prompt=\"\(fullPrompt.prefix(120))\"")
+                    PCLog.debug("[LiteRT] images=\(imagesData.count) audios=\(audios.count) promptChars=\(fullPrompt.count) prompt=\"\(fullPrompt.prefix(120))\"")
                     #endif
 
                     // audio-only → engine.audio(format:.wav) 专用 API
@@ -836,7 +884,7 @@ final class LiteRTBackend: InferenceService {
                     }
                     let audiosData = audios.map(\.wavData)
 
-                    print("[LiteRT] 📩 Live turn: prompt=\"\(prompt.prefix(300))\" images=\(imagesData.count) audios=\(audiosData.count)")
+                    PCLog.debug("[LiteRT] 📩 Live turn: prompt=\"\(prompt.prefix(300))\" images=\(imagesData.count) audios=\(audiosData.count)")
                     let stream = engine.conversationSendStreaming(
                         audioData: audiosData,
                         imagesData: imagesData,
