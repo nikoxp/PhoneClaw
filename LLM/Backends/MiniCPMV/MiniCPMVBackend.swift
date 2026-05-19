@@ -107,6 +107,32 @@ final class MiniCPMVBackend: InferenceService {
     /// 我们 best-effort 提示并强制 reset。
     @ObservationIgnored private var isLiveMode: Bool = false
 
+    // MARK: - Live Transaction Gate
+    //
+    // 把每一笔 generateLive 当作完整事务串行化:
+    //   prefill (frames + text) → start cmtmd_loop → 等到 token.isEnd / cancel / drain 完成。
+    // 一笔事务还没完全结束之前,下一笔 generateLive 必须排队等。
+    //
+    // 历史教训: 没有 gate 时, LiveModeEngine 的多个入口 (greeting / 用户轮次 /
+    // 旧版的 notifyCameraStateChanged) 会并发调 generateLive — Task @MainActor 之间
+    // 的 await 会让 MainActor 释放, 多笔事务交错执行, MTMDWrapper 把 cmtmd_prefill_*
+    // / cmtmd_loop 全部 dispatch 到 global queue, 同一个 C ctx 被多线程踩花,
+    // iPhone 16 Pro / iOS 26.5 直接 EXC_BAD_ACCESS 闪退。
+    //
+    // 设计:
+    //   - liveTxLock: read-modify-write `liveTxTail` 的临界区, 保证 RMW 原子。
+    //     不依赖 caller 是 MainActor。
+    //   - liveTxTail: 当前 in-flight 事务的 Task 句柄。新事务进来时:
+    //     (1) 在锁内 capture 前一笔, 把自己装上;
+    //     (2) Task body 里 cancel 前一笔 + stopGeneration,
+    //         等前一笔 body return 后再跑自己的 transaction。
+    //   - cancel-and-restart 语义: 新请求总是优先, 旧请求被打断 (符合 Live mode
+    //     "用户随时打断助手" 的交互预期)。
+    //   - 范围: 只 gate generateLive。chat 路径的 generate / generateMultimodal
+    //     走完全不同的方法, 不受影响。
+    @ObservationIgnored private let liveTxLock = NSLock()
+    @ObservationIgnored private var liveTxTail: Task<Void, Never>?
+
     // MARK: Init
 
     init(bundleResolver: @escaping (String) -> MTMDPathBundle?) {
@@ -353,17 +379,39 @@ final class MiniCPMVBackend: InferenceService {
     }
 
     func exitLiveMode() async {
+        // 先标 isLiveMode=false。这一步是同步的, 任何后续到来的 generateLive 看到
+        // !isLiveMode 会走 warn 路径; 真正防止它们碰 ctx 的是下面把自己装上
+        // liveTxTail 后, 新事务必须等我们 drain + cleanKVCache 完成。
         isLiveMode = false
-        if let w = wrapper {
-            await MainActor.run {
+
+        // 把 exitLiveMode 当作一个 live tx node 串到 gate 链上:
+        //   1. 在锁内 capture-and-replace tail
+        //   2. exitTask body 先 cancel + drain 前一笔 (in-flight 推理或 close-text 的 await)
+        //   3. drain 完才 setImageMaxSliceNums + cleanKVCache, 保证不跟 cmtmd_loop /
+        //      cmtmd_prefill_* 抢同一个 ctx
+        // 这条修复了原来的"生成中关 LIVE → cleanKVCache 跟 in-flight ctx 操作 race"
+        // 同类崩溃。
+        liveTxLock.lock()
+        let previousTail = liveTxTail
+        let exitTask: Task<Void, Never> = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let previousTail {
+                previousTail.cancel()
+                self.wrapper?.stopGeneration()
+                await previousTail.value
+            }
+            if let w = self.wrapper {
                 // 还原 chat 路径默认 (9 slice = 大图/OCR 友好)
                 w.setImageMaxSliceNums(9)
                 // 清 KV 但保留模型权重 — 比 reset() 轻 (不卸 ctx)
-                w.cleanKVCache()
+                _ = w.cleanKVCache()
             }
+            self.prefilledSegments = []
+            PCLog.debug("[MiniCPMV] exitLiveMode: KV cleared, slice=9 restored")
         }
-        prefilledSegments = []
-        PCLog.debug("[MiniCPMV] exitLiveMode: KV cleared, slice=9 restored")
+        liveTxTail = exitTask
+        liveTxLock.unlock()
+        await exitTask.value
     }
 
     // MARK: - Gemma → Qwen prompt translation
@@ -929,153 +977,297 @@ final class MiniCPMVBackend: InferenceService {
     ///   - **addFrame 而非 addImage** — 走视频帧 API (语义对齐 OpenBMB demo)
     ///   - **JPEG 50% 落盘** — 视频帧不需要无损
     ///   - **不 stamp prefilledSegments** — Live 与 chat 文本 KV tracker 是两套 state
+    ///
+    /// **事务串行化 gate**: 每一笔 generateLive 视作完整事务, 包含 prefill (frames+text)
+    /// → cmtmd_loop → token.isEnd/cancel/drain。新事务进来时先 cancel 前一笔 + stopGeneration,
+    /// 等前一笔 body 退出再开始 prefill。详见 `liveTxTail` 注释。
     private func _runLiveStream(
         userPrompt: String,
         frames: [CIImage]
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            Task { @MainActor [weak self] in
+            // Gate: atomic capture-and-replace of tail. 锁覆盖 RMW 临界区,
+            // 不延伸到 Task body, 避免长时间持锁。
+            liveTxLock.lock()
+            let previousTail = liveTxTail
+            let myTask: Task<Void, Never> = Task { @MainActor [weak self] in
                 guard let self else {
                     continuation.finish()
                     return
                 }
-                guard self.isLoaded, let w = self.wrapper else {
-                    continuation.finish(throwing: ModelBackendError.modelNotLoaded)
-                    return
+                // Drain 前一笔: cancel-and-restart。
+                //   - Task.cancel() 把 isCancelled 信号传到 runLiveTransactionBody 的检查点
+                //   - stopGeneration() 让 in-flight cmtmd_loop 退出 (Task.isCancelled 进 loop top)
+                //   - await previousTail.value 等前一笔 body 完整 return (含 close-text drain)
+                if let previousTail {
+                    previousTail.cancel()
+                    self.wrapper?.stopGeneration()
+                    await previousTail.value
                 }
-                if !self.isLiveMode {
-                    // 防御: 调用方没 enterLiveMode 就直接调 generateLive。我们不
-                    // hard-fail (LiveModeEngine 的契约会保证顺序), 但打 warn 提醒。
-                    PCLog.debug("[MiniCPMV] ⚠️ generateLive called before enterLiveMode — KV may be in unexpected state")
-                }
+                await self.runLiveTransactionBody(
+                    userPrompt: userPrompt,
+                    frames: frames,
+                    continuation: continuation
+                )
+            }
+            liveTxTail = myTask
+            liveTxLock.unlock()
+        }
+    }
 
-                self.isGenerating = true
+    /// 单笔 Live 事务主体。在 @MainActor 上跑, 全程 await 直到下列任一路径完成:
+    ///   1. sink 看到 token.isEnd → 正常完成
+    ///   2. continuation.onTermination → consumer (LiveModeEngine) 主动取消
+    ///   3. Task.isCancelled → 被下一笔 generateLive drain
+    ///
+    /// 三条路径都通过 `signalDone()` 汇合到末尾的 `for await _ in doneStream`,
+    /// 让函数能确切地 return —— 这是上游 gate 实现 "等前一笔 body 完整退出" 的前提。
+    @MainActor
+    private func runLiveTransactionBody(
+        userPrompt: String,
+        frames: [CIImage],
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async {
+        if Task.isCancelled {
+            continuation.finish()
+            return
+        }
+        guard isLoaded, let w = wrapper else {
+            continuation.finish(throwing: ModelBackendError.modelNotLoaded)
+            return
+        }
+        if !isLiveMode {
+            // 防御: 调用方没 enterLiveMode 就直接调 generateLive。我们不
+            // hard-fail (LiveModeEngine 的契约会保证顺序), 但打 warn 提醒。
+            PCLog.debug("[MiniCPMV] ⚠️ generateLive called before enterLiveMode — KV may be in unexpected state")
+        }
 
-                final class StreamState: @unchecked Sendable {
-                    var c: AnyCancellable?
-                    var completedSuccessfully: Bool = false
-                    var ttftMs: Double?
-                    var chunkCount: Int = 0
-                    var tempFiles: [URL] = []
-                }
-                let state = StreamState()
-                let startTime = CFAbsoluteTimeGetCurrent()
+        isGenerating = true
 
-                state.c = w.$currentToken
-                    .dropFirst()
-                    .sink { token in
-                        if !token.content.isEmpty {
-                            if state.ttftMs == nil {
-                                state.ttftMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-                            }
-                            state.chunkCount += 1
-                            // decodeEscapes: 字面 `\n` → 真换行。Live 也走 markdown UI
-                            // (虽然 TTS 朗读时 sanitizer 会再扁平化掉换行)
-                            continuation.yield(Self.decodeEscapes(token.content))
-                        }
-                        if token.isEnd {
-                            state.completedSuccessfully = true
-                            continuation.finish()
-                            state.c?.cancel()
-                            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-                            let chunksPerSec: Double = (elapsed > 0 && state.chunkCount > 0)
-                                ? Double(state.chunkCount) / elapsed
-                                : 0
-                            let finalTtftMs = state.ttftMs ?? 0
-                            let finalChunkCount = state.chunkCount
-                            let tempFilesCopy = state.tempFiles
-                            Task { @MainActor [weak self] in
-                                guard let self else { return }
-                                self.isGenerating = false
-                                self.stats.ttftMs = finalTtftMs
-                                self.stats.totalChunks = finalChunkCount
-                                self.stats.chunksPerSec = chunksPerSec
-                                PCLog.perf(
-                                    ttftMs: Int(finalTtftMs),
-                                    chunks: finalChunkCount,
-                                    chunksPerSec: chunksPerSec,
-                                    headroomMB: MemoryStats.headroomMB
-                                )
-                                // Live 不 stamp prefilledSegments — 维持 isLiveMode=true 下
-                                // 文本 KV tracker 不参与, 退出 Live 时 exitLiveMode 统一清。
-                                Self.cleanupTempFiles(tempFilesCopy)
-                            }
-                        }
+        final class StreamState: @unchecked Sendable {
+            var c: AnyCancellable?
+            var completedSuccessfully: Bool = false
+            var ttftMs: Double?
+            var chunkCount: Int = 0
+            var tempFiles: [URL] = []
+            // 完成信号: 任一退出路径 (isEnd / onTermination / cancel) 都通过这里
+            // yield 一次, 让 body 末尾的 for-await 能 break 退出。幂等。
+            var doneCont: AsyncStream<Void>.Continuation?
+            let doneLock = NSLock()
+            var doneSignaled = false
+            // close-text 是否已经被 await 过。abortDuringPrefill 走完 close-text 后
+            // 置 true, onTermination 见到 true 就跳过 — 避免双重 close-text 让
+            // 第二份 prefill_text 排在下一笔事务的 prefill 之后, 撞 ctx。
+            var closeTextHandled = false
+
+            func signalDone() {
+                doneLock.lock()
+                let already = doneSignaled
+                if !already { doneSignaled = true }
+                doneLock.unlock()
+                guard !already else { return }
+                doneCont?.yield()
+                doneCont?.finish()
+            }
+        }
+        let state = StreamState()
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let (doneStream, doneCont) = AsyncStream<Void>.makeStream()
+        state.doneCont = doneCont
+
+        state.c = w.$currentToken
+            .dropFirst()
+            .sink { token in
+                if !token.content.isEmpty {
+                    if state.ttftMs == nil {
+                        state.ttftMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
                     }
-
-                continuation.onTermination = { _ in
+                    state.chunkCount += 1
+                    // decodeEscapes: 字面 `\n` → 真换行。Live 也走 markdown UI
+                    // (虽然 TTS 朗读时 sanitizer 会再扁平化掉换行)
+                    continuation.yield(Self.decodeEscapes(token.content))
+                }
+                if token.isEnd {
+                    state.completedSuccessfully = true
+                    continuation.finish()
                     state.c?.cancel()
+                    let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+                    let chunksPerSec: Double = (elapsed > 0 && state.chunkCount > 0)
+                        ? Double(state.chunkCount) / elapsed
+                        : 0
+                    let finalTtftMs = state.ttftMs ?? 0
+                    let finalChunkCount = state.chunkCount
                     let tempFilesCopy = state.tempFiles
                     Task { @MainActor [weak self] in
                         guard let self else {
-                            Self.cleanupTempFiles(tempFilesCopy)
+                            state.signalDone()
                             return
                         }
-                        if !state.completedSuccessfully {
-                            // Live 模式 cancel: 停 decode 但 KV 保留 (用户打断不丢上下文)
-                            self.wrapper?.stopGeneration()
-                            self.isGenerating = false
-
-                            // 关键修复: cancel-during-decode 让 KV 里残留一个**没闭合的**
-                            // <|im_start|>assistant\n<think>\n\n</think>\n\n[少数已 decode token]
-                            //   ↑ 没有 <|im_end|> 结尾。
-                            // Live mode 跨轮复用 KV — 下次 generate 模型会把残缺的 assistant
-                            // turn 当"上轮没说完", 影响后续语义判断。例如 LiveModeEngine 的
-                            // notifyCameraStateChanged "prefill-then-cancel" 注入摄像头状态后,
-                            // 模型实测会把新提问当成对上轮残文的延续, 返回 "你可以看到摄像头正
-                            // 在工作的画面" 这种复述系统通知的怪话。
-                            //
-                            // 修法: 调 prefill_text(role="assistant", text=" ") —
-                            // mtmd-ios 内部把 assistant 角色格式化成 `{text}<|im_end|>\n`,
-                            // 等于给悬空 turn 补一个 close marker, KV 状态变干净。
-                            // 单空格是为了过 mtmd-ios 的 text.empty() 早期返回检查 (空字符串
-                            // 会返回 -1)。这一个空格的 token 对 attention 几乎无影响。
-                            if let w = self.wrapper {
-                                Task { @MainActor in
-                                    try? await w.addTextInBackground(" ", role: "assistant")
-                                }
-                            }
-
-                            Self.cleanupTempFiles(tempFilesCopy)
-                        }
+                        self.isGenerating = false
+                        self.stats.ttftMs = finalTtftMs
+                        self.stats.totalChunks = finalChunkCount
+                        self.stats.chunksPerSec = chunksPerSec
+                        PCLog.perf(
+                            ttftMs: Int(finalTtftMs),
+                            chunks: finalChunkCount,
+                            chunksPerSec: chunksPerSec,
+                            headroomMB: MemoryStats.headroomMB
+                        )
+                        // Live 不 stamp prefilledSegments — 维持 isLiveMode=true 下
+                        // 文本 KV tracker 不参与, 退出 Live 时 exitLiveMode 统一清。
+                        Self.cleanupTempFiles(tempFilesCopy)
+                        state.signalDone()
                     }
-                }
-
-                do {
-                    // Live: 不 reset KV — 跨轮累积是核心特性
-
-                    // 1. 每帧落 JPEG → addFrameInBackground → 立刻 unlink
-                    //    用 detached task 把 JPEG 编码扔到后台, 不卡 main。
-                    for (idx, img) in frames.enumerated() {
-                        let encoded: URL = try await Task.detached(priority: .userInitiated) {
-                            try Self.writeCIImageToTempJPEG(img, index: idx)
-                        }.value
-                        state.tempFiles.append(encoded)
-                        do {
-                            try await w.addFrameInBackground(encoded.path)
-                        } catch {
-                            Self.cleanupTempFiles([encoded])
-                            state.tempFiles.removeAll { $0 == encoded }
-                            throw error
-                        }
-                        Self.cleanupTempFiles([encoded])
-                        state.tempFiles.removeAll { $0 == encoded }
-                    }
-
-                    // 2. user text — Live 里 prompt 是 PromptBuilder.buildLiveVoiceUserPrompt
-                    //    的输出 (transcript + 可选 system event marker), 走 user role
-                    try await w.addTextInBackground(userPrompt, role: "user")
-
-                    // 3. start
-                    try await w.startGeneration()
-                } catch {
-                    continuation.finish(throwing: error)
-                    state.c?.cancel()
-                    self.isGenerating = false
-                    Self.cleanupTempFiles(state.tempFiles)
-                    // Live 错误不 stamp __error__ — 它是 chat tracker 的状态, Live 用不到
                 }
             }
+
+        continuation.onTermination = { _ in
+            state.c?.cancel()
+            let tempFilesCopy = state.tempFiles
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    Self.cleanupTempFiles(tempFilesCopy)
+                    // self 已 dealloc, 没人能再 signalDone — 兜底一次, 防止上游 await 卡死。
+                    state.signalDone()
+                    return
+                }
+                // 自然完成路径: token.isEnd 的 sink handler 自己会调一个 Task @MainActor
+                // 更新 isGenerating / stats / cleanup + signalDone。我们这里**不**抢着
+                // signalDone — 否则有 race: 如果 onTermination 的 Task 比 sink 的 Task
+                // 先跑到 MainActor, doneStream 已 yield, body 已返回, 下一笔事务可能
+                // 已经开始; 这时 sink 的 Task 才把 isGenerating=false / stats 覆盖,
+                // 污染新事务的状态。
+                if state.completedSuccessfully {
+                    return
+                }
+                // 跳过 close-text 的另一条件: abortDuringPrefill 或 error 路径
+                // 已经处理过 — 避免双重 close-text 让第二份排在下一笔事务的 prefill 之后撞 ctx。
+                let skipCloseText = state.closeTextHandled
+                if !skipCloseText {
+                    // Live 模式 cancel: 停 decode 但 KV 保留 (用户打断不丢上下文)
+                    self.wrapper?.stopGeneration()
+                    self.isGenerating = false
+
+                    // 关键修复: cancel-during-decode 让 KV 里残留一个**没闭合的**
+                    // <|im_start|>assistant\n<think>\n\n</think>\n\n[少数已 decode token]
+                    //   ↑ 没有 <|im_end|> 结尾。
+                    // Live mode 跨轮复用 KV — 下次 generate 模型会把残缺的 assistant
+                    // turn 当"上轮没说完", 影响后续语义判断。
+                    //
+                    // 修法: 调 prefill_text(role="assistant", text=" ") —
+                    // mtmd-ios 内部把 assistant 角色格式化成 `{text}<|im_end|>\n`,
+                    // 等于给悬空 turn 补一个 close marker, KV 状态变干净。
+                    // 单空格是为了过 mtmd-ios 的 text.empty() 早期返回检查 (空字符串
+                    // 会返回 -1)。这一个空格的 token 对 attention 几乎无影响。
+                    //
+                    // 跟原版的差异: 改为 await 等 prefill_text 完成再 signalDone,
+                    // 不是 fire-and-forget Task。否则上游 gate 的 await previousTail.value
+                    // return 时 close-text 还在 global queue 排队, 下一笔 prefill_text
+                    // 进来就跟它撞 ctx — 闪退原因之一。
+                    if let w = self.wrapper {
+                        try? await w.addTextInBackground(" ", role: "assistant")
+                    }
+                    state.closeTextHandled = true
+
+                    Self.cleanupTempFiles(tempFilesCopy)
+                }
+                state.signalDone()
+            }
+        }
+
+        // 早退辅助: 被 cancel-drain 时, 清掉 sink/临时文件 + 补 close-text。
+        // 走到这里说明 startGeneration 还没发生 (或 prefill 刚开始), 但保险起见
+        // 仍然补一次空格 assistant turn (idempotent, 多个空 turn 也无害)。
+        //
+        // 注意 closeTextHandled 必须在 continuation.finish() 之前置 true —
+        // finish() 会同步触发 onTermination 的闭包注册的 Task。Task 体内访问
+        // closeTextHandled 时已经看到 true, 跳过自己的 close-text。
+        func abortDuringPrefill() async {
+            state.c?.cancel()
+            self.isGenerating = false
+            Self.cleanupTempFiles(state.tempFiles)
+            try? await w.addTextInBackground(" ", role: "assistant")
+            state.closeTextHandled = true
+            continuation.finish()
+            state.signalDone()
+        }
+
+        do {
+            // Live: 不 reset KV — 跨轮累积是核心特性
+
+            // 1. 每帧落 JPEG → addFrameInBackground → 立刻 unlink
+            //    用 detached task 把 JPEG 编码扔到后台, 不卡 main。
+            //    每个 await 前后插 Task.isCancelled 检查, 让 cancel-drain 能尽早 bail。
+            for (idx, img) in frames.enumerated() {
+                if Task.isCancelled {
+                    await abortDuringPrefill()
+                    return
+                }
+                let encoded: URL = try await Task.detached(priority: .userInitiated) {
+                    try Self.writeCIImageToTempJPEG(img, index: idx)
+                }.value
+                state.tempFiles.append(encoded)
+                do {
+                    try await w.addFrameInBackground(encoded.path)
+                } catch {
+                    Self.cleanupTempFiles([encoded])
+                    state.tempFiles.removeAll { $0 == encoded }
+                    throw error
+                }
+                Self.cleanupTempFiles([encoded])
+                state.tempFiles.removeAll { $0 == encoded }
+            }
+            if Task.isCancelled {
+                await abortDuringPrefill()
+                return
+            }
+
+            // 2. user text — Live 里 prompt 是 PromptBuilder.buildLiveVoiceUserPrompt
+            //    的输出 (transcript + 可选 system event marker), 走 user role
+            try await w.addTextInBackground(userPrompt, role: "user")
+            if Task.isCancelled {
+                await abortDuringPrefill()
+                return
+            }
+
+            // 3. start
+            try await w.startGeneration()
+        } catch {
+            // 关键: 先标 closeTextHandled = true 再 finish(throwing:)。
+            // finish(throwing:) 会同步触发 onTermination 注册一个 Task @MainActor,
+            // 那个 Task 看到 closeTextHandled=true 才会跳过 close-text。
+            // 否则它会异步去 cmtmd_prefill_text — 而 signalDone 已经放行下一笔事务,
+            // 两份 prefill_text 撞同一个 ctx, 回到原来的闪退根因。
+            //
+            // 错误路径本来就没开始正常 assistant decode (大概率挂在 frame prefill 或
+            // user-role prefill), KV 里也没残留悬空的 assistant turn, 不需要补
+            // close-text。
+            state.closeTextHandled = true
+            continuation.finish(throwing: error)
+            state.c?.cancel()
+            self.isGenerating = false
+            Self.cleanupTempFiles(state.tempFiles)
+            state.signalDone()
+            // Live 错误不 stamp __error__ — 它是 chat tracker 的状态, Live 用不到
+            return
+        }
+
+        // 等事务完成。三条路径汇合: token.isEnd / onTermination / Task.isCancelled。
+        // AsyncStream 的迭代器在 Task 被 cancel 时会返回 nil 让 for-await 退出。
+        for await _ in doneStream { break }
+
+        // 兜底: 如果是 cancel-drain 在 cmtmd_loop 运行中走到这里, sink 不会
+        // emit isEnd, onTermination 也不一定触发 (consumer 还在等流, 没主动取消)。
+        // 必须:
+        //   - 显式 continuation.finish() 让消费端走出 for-try-await, 否则上游卡 15s 超时
+        //   - 补 close-text 让 KV 状态干净给下一笔事务
+        if Task.isCancelled && !state.completedSuccessfully && !state.closeTextHandled {
+            wrapper?.stopGeneration()
+            isGenerating = false
+            try? await w.addTextInBackground(" ", role: "assistant")
+            state.closeTextHandled = true
+            Self.cleanupTempFiles(state.tempFiles)
+            continuation.finish()
         }
     }
 

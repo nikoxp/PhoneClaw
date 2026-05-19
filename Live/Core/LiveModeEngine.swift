@@ -137,7 +137,7 @@ class LiveModeEngine {
     private(set) var lastReply: String = ""
     private(set) var liveCaption: String = ""
     private(set) var inputLevel: Double = 0
-    private(set) var statusMessage: String = "等待启动"
+    private(set) var statusMessage: String = LiveLocale.zhCN.config.statusStrings.preparingLive
 
     /// 可视化音频分析器（由 OrbSceneView 弱引用）
     /// start() 前为 nil，stop() 后清零。@Observable 无需额外通知机制。
@@ -198,25 +198,29 @@ class LiveModeEngine {
     /// 摄像头帧提供器，由 UI 层注入。Engine 不直接依赖 LiveCameraService。
     var frameProvider: (() -> CIImage?)?
 
-    /// 通知 engine 摄像头状态变化，engine 向 conversation 发一条系统事件消息.
-    /// 让模型知道当前能否看到画面，防止基于旧 KV cache 幻觉.
+    /// 当前摄像头是否开启 (由 UI 层通过 notifyCameraStateChanged 同步)。
+    /// 用于判断下一轮 user prompt 是否需要 "(摄像头未开启)" marker (跟 hasOpenedCameraEver 配合)。
+    private var cameraEnabled: Bool = false
+
+    /// 本次 Live 会话是否曾经开启过摄像头。会话开始时 reset。
+    /// 跟 cameraEnabled 配合, 决定纯文本轮是否需要 camera-off marker:
+    /// 仅当 hasOpenedCameraEver=true && cameraEnabled=false 时贴, 防止模型基于陈旧 vision KV 幻觉。
+    private var hasOpenedCameraEver: Bool = false
+
+    /// 通知 engine 摄像头状态变化.
+    ///
+    /// 历史: 原实现在这里额外 prefill 一条系统消息进 KV (`generateLive` + 立即 cancel),
+    /// 让模型感知摄像头状态。但这条路径会跟 greeting / 用户轮次的 generateLive 并发,
+    /// 在 iPhone 16 Pro / iOS 26.5 上撞到 MiniCPM-V 原生 ctx 导致闪退。
+    ///
+    /// 现在只记状态, 不触发任何推理。摄像头状态通过两条路径反映到 prompt:
+    ///   1. ON + 有 frame: PromptBuilder 在视觉轮加 task hint, 模型直接看图作答
+    ///   2. OFF + 之前开过: PromptBuilder 加 "(摄像头未开启)" marker, 防 stale KV 幻觉
+    /// 详见 `PromptBuilder.buildLiveVoiceUserPrompt`。
     func notifyCameraStateChanged(isOn: Bool) {
-        guard let inference else { return }
-        let msg = isOn
-            ? "(系统通知：用户已开启摄像头，你现在可以看到画面了)"
-            : "(系统通知：用户已关闭摄像头，你现在无法看到任何画面。如果用户问你看到什么，告诉他需要先开启摄像头)"
-        print("[Live] 📷 Camera state → \(isOn ? "ON" : "OFF"), injecting system event")
-        // prompt prefill 后立即 cancel, 只保留 KV cache 上下文, 不浪费 decode 计算
-        Task {
-            let t0 = CFAbsoluteTimeGetCurrent()
-            for try await _ in inference.generateLive(prompt: msg, images: [], audios: []) {
-                // 首个 token 说明 prefill 完成, 立即 cancel 停止 decode
-                inference.cancel()
-                let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-                print("[Live] 📷 Camera event prefilled & cancelled in \(ms)ms (saved ~2s decode)")
-                break
-            }
-        }
+        cameraEnabled = isOn
+        if isOn { hasOpenedCameraEver = true }
+        print("[Live] 📷 Camera state → \(isOn ? "ON" : "OFF") (state only, no inference)")
     }
 
     private var liveLocaleConfig: LiveLocaleConfig { LiveLocale.zhCN.config }
@@ -240,9 +244,20 @@ class LiveModeEngine {
     private func startLegacy() async {
         guard turnPhase == .inactive else { return }
         turnPhase = .starting
-        state = .listening
+        // state 保持 .idle — orb 暗色, 用户看到 "加载中"。
+        // 历史 bug: 这里本来过早把 state 设成 .listening, 跟下面 line ~405
+        // 注释里的"state 保持 .idle"意图相反。UI 上 camera/麦克风入口如果按
+        // state == .listening 判定 ready, 就会在 greeting 还没播完之前允许
+        // 用户交互 — 摄像头按钮可点 → 触发并发推理 → MTMD ctx 撞死 → 闪退。
+        // 状态机正解: starting (state=.idle) → speaking (greeting 播放) → listening (VAD 起)。
         statusMessage = liveStrings.preparingLive
+        // 新会话: 重置摄像头跟踪状态。上一次会话 KV 已经被 enterLiveMode 的
+        // cleanKVCache 清掉, "hasOpenedCameraEver" 跟着归零, 否则会在新会话第一轮
+        // 错误地贴 (摄像头未开启) marker。
+        cameraEnabled = false
+        hasOpenedCameraEver = false
         print("[Live] Starting (legacy)...")
+        await Task.yield()
 
         // 检查 LIVE 语音模型是否已就绪 (ASR + TTS)
         if !LiveModelDefinition.isAvailable {
@@ -943,9 +958,15 @@ class LiveModeEngine {
         var isFirstToken = true
         var isFirstSentence = true
 
+        // camera-off marker: 仅当本会话开过摄像头但当前已关时贴, 防止模型基于陈旧
+        // KV 里的 vision token 幻觉 "我能看到什么"。从未开过摄像头的会话不加, 避免
+        // 每轮多一句无意义噪音。视觉轮 (frame != nil) 由 PromptBuilder 自己加 vision
+        // hint, 这里只负责非视觉轮的"关掉了"信号。
+        let cameraOffNote = hasOpenedCameraEver && !cameraEnabled
         let eventStream = processor.processTurn(
             transcript: transcript,
-            frame: frame
+            frame: frame,
+            cameraOff: cameraOffNote
         )
 
         do {

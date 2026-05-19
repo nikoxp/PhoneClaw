@@ -23,6 +23,9 @@ struct LiveModeView: View {
     @State private var camera = LiveCameraService()
     @State private var isCameraEnabled = false
     @State private var isCameraStarting = false
+    /// 摄像头权限被拒后的 alert 开关。iOS 对 `.denied` 不允许 app 再弹原生权限框,
+    /// 只能引导用户去系统设置开。这里弹一个自有 alert 提供 "去设置" 深链。
+    @State private var showCameraPermissionAlert = false
 
     /// Live 进入前用户的模型 ID. 仅当 Live 内强制切 E2B 时才记下,
     /// 退出 Live 在 onDisappear 切回, 让 service 恢复用户偏好.
@@ -216,6 +219,18 @@ struct LiveModeView: View {
             #endif
             Task { await liveEngine.stop() }
         }
+        .alert(
+            tr("需要相机权限", "Camera Access Needed"),
+            isPresented: $showCameraPermissionAlert
+        ) {
+            Button(tr("去设置", "Open Settings")) { openAppSettings() }
+            Button(tr("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(tr(
+                "请到 设置 → 隐私与安全性 → 相机 里允许 PhoneClaw 使用相机。",
+                "Enable camera access for PhoneClaw in Settings → Privacy & Security → Camera."
+            ))
+        }
     }
 
     // MARK: - 顶栏
@@ -394,7 +409,18 @@ struct LiveModeView: View {
     private var bottomBar: some View {
         // 双按钮: 左 = 摄像头 toggle, 右 = 结束 Live.
         // 左按钮承担两个状态 (开/关), 文案随 isCameraEnabled 变化.
-        HStack(spacing: 12) {
+        //
+        // 摄像头按钮可用条件:
+        //   - Engine 已度过 starting (state != .idle): greeting 期 state=.idle,
+        //     不允许提前开摄像头。greeting 一旦开始播放, state 进入 .speaking,
+        //     按钮就放开 — 此时即使助手还在讲, 开摄像头本身不触发推理 (Step 1
+        //     已经把 generateLive 从 notifyCameraStateChanged 里拆掉), 只动
+        //     AVCaptureSession + frameProvider, 安全。
+        //   - 没有正在 starting 的相机会话 (本地 isCameraStarting flag)。
+        //   - 注意: **不读 inference.isGenerating** — 开摄像头跟模型推理已解耦,
+        //     助手讲话时用户依然可以预开摄像头, 这是常见交互, 别误禁用。
+        let cameraButtonDisabled = (liveEngine.state == .idle) || isCameraStarting
+        return HStack(spacing: 12) {
             // 左: 摄像头开关
             Button(action: toggleCamera) {
                 HStack(spacing: 8) {
@@ -415,8 +441,10 @@ struct LiveModeView: View {
                         .strokeBorder(liveControlBorder, lineWidth: 1)
                         .allowsHitTesting(false)
                 )
+                .opacity(cameraButtonDisabled ? 0.5 : 1.0)
             }
             .buttonStyle(.plain)
+            .disabled(cameraButtonDisabled)
 
             // 右: 结束 Live
             Button(action: close) {
@@ -464,6 +492,20 @@ struct LiveModeView: View {
             liveEngine.notifyCameraStateChanged(isOn: false)
         } else {
             guard !isCameraStarting else { return }
+            // 在 LiveCameraService.start() 之前先查一次权限。
+            // iOS 对 .denied / .restricted 不允许 app 再弹原生 OS 权限框 —
+            // requestAccess(for:) 第一次被拒后, 后续调用立即 return false,
+            // 没有任何 UI。silent fail 让用户以为按钮"没反应"。
+            // 解法: 检测到 denied/restricted 时弹自有 alert + "去设置" 深链;
+            // notDetermined / authorized 两种状态走原有路径 (LiveCameraService 内部
+            // 该 requestAccess 还是 requestAccess)。
+            #if canImport(AVFoundation)
+            let status = AVCaptureDevice.authorizationStatus(for: .video)
+            if status == .denied || status == .restricted {
+                showCameraPermissionAlert = true
+                return
+            }
+            #endif
             isCameraStarting = true
             Task {
                 defer { isCameraStarting = false }
@@ -473,10 +515,29 @@ struct LiveModeView: View {
                     isCameraEnabled = true
                     liveEngine.notifyCameraStateChanged(isOn: true)
                 } else {
+                    // 走到这里通常是 notDetermined 路径下用户在原生权限框点了 "Don't Allow",
+                    // 此时 status 已经变成 .denied。下次再点按钮就会被上面的 pre-check 拦住,
+                    // 弹引导去设置的 alert。
                     print("[Live] Camera start failed — permission denied or device unavailable")
+                    #if canImport(AVFoundation)
+                    let newStatus = AVCaptureDevice.authorizationStatus(for: .video)
+                    if newStatus == .denied || newStatus == .restricted {
+                        showCameraPermissionAlert = true
+                    }
+                    #endif
                 }
             }
         }
+    }
+
+    /// 打开系统 设置 → PhoneClaw 页, 让用户手动开相机权限。
+    /// 仅 UIKit 平台 (iOS) 可用; UIApplication.openSettingsURLString 在 macCatalyst
+    /// 上也有效, 在纯 macOS 不存在 — 整段 #if 兜底。
+    private func openAppSettings() {
+        #if canImport(UIKit)
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+        #endif
     }
 }
 

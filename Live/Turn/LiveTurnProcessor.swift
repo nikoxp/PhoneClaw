@@ -63,9 +63,13 @@ final class LiveTurnProcessor {
     /// - Parameters:
     ///   - transcript: ASR 输出的当前轮用户纯文本.
     ///   - frame: 可选摄像头画面 (由 LiveCameraService 提供).
+    ///   - cameraOff: 本会话开过摄像头但当前已关。true 时 PromptBuilder 加 "(摄像头未开启)"
+    ///     marker, 防止模型基于陈旧 vision KV 幻觉。视觉轮 (frame != nil) 由 PromptBuilder
+    ///     自己处理 vision hint, 不读这个值。
     func processTurn(
         transcript: String,
-        frame: CIImage?
+        frame: CIImage?,
+        cameraOff: Bool = false
     ) -> AsyncThrowingStream<LiveOutputEvent, Error> {
         _ = historyDepth
         _ = enableSkillInvocation
@@ -73,7 +77,8 @@ final class LiveTurnProcessor {
         let turnPrompt = PromptBuilder.buildLiveVoiceUserPrompt(
             userTranscript: transcript,
             locale: locale,
-            hasVision: frame != nil
+            hasVision: frame != nil,
+            cameraOff: cameraOff
         )
 
         let images: [CIImage] = frame.map { [$0] } ?? []

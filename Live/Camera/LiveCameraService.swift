@@ -119,6 +119,9 @@ final class LiveCameraService: NSObject {
                 output.setSampleBufferDelegate(self, queue: self.captureQueue)
                 guard self.session.canAddOutput(output) else {
                     print("[LiveCam] ❌ Cannot add video output")
+                    // 把刚 addInput 进来的 input 撤掉, 否则 session 残留输入,
+                    // 用户 retry start() 时会累积出两个 input。
+                    self.session.removeInput(input)
                     self.session.commitConfiguration()
                     cont.resume(returning: false)
                     return

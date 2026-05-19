@@ -43,29 +43,51 @@ extension PromptBuilder {
     /// 现在按 locale.config.userPromptPrefix 是否为空决定是否加 wrapping:
     ///   - 中文: prefix="你是" → "(你是手机龙虾) 用户的话"      (保留原有抗漂移 wrap)
     ///   - 英文: prefix=""    → "用户的话"                      (不 wrap, 系统 prompt 已经够)
-    /// 摄像头状态由 notifyCameraStateChanged() 事件驱动注入, 不在每条消息里重复。
     ///
-    /// **vision 轮特殊处理**：当 hasVision=true 时, 跳过 persona wrapping。
+    /// **camera-off marker**: 原来用 `notifyCameraStateChanged` 在 KV 里 prefill 系统消息
+    /// 来告诉模型摄像头状态。但这条路径会跟 greeting / 用户轮次的 generateLive 并发, 撞到
+    /// MiniCPM-V 原生 ctx → 闪退。改为按需在 user prompt 里贴一个 `(摄像头未开启)` marker:
+    /// 仅当 `cameraOff == true` (即"摄像头本会话开过但当前已关") 时追加, 防止模型基于陈旧
+    /// 视觉 KV 幻觉。从未开过摄像头的会话不加, 避免每轮多一句噪音。
+    ///
+    /// **vision 轮特殊处理**：当 hasVision=true 时, 跳过 persona wrapping, 只加很短的
+    /// 视觉轮提示。
     /// 真实场景观察 (MiniCPM-V 4.6, 0.8B): "(你是手机龙虾) 你现在可以看到什么"
     /// 这种 user message 会被小模型当成"关于身份的元指令", 模型不去看图, 反而
     /// 输出身份/状态类回答 (例如复述上一条 camera-on 系统通知)。视觉查询本身就
     /// 不需要 persona 提醒 — 图像信号足够强 + system prompt 里也有 persona。
+    /// 但完全裸传 transcript 时, 小模型会把"你现在能看到什么"误判成"用户仍在思考"
+    /// 并输出 ◐, 导致 Live 层按 incomplete turn suppress assistant reply。因此这里
+    /// 只提醒"本轮带画面, 这是完整视觉问题", 不再注入身份或摄像头状态通知。
     /// Gemma 4 VLM 上同样适用 (VLM 训练数据里的 image+query 一般不带身份 wrap)。
     static func buildLiveVoiceUserPrompt(
         userTranscript: String,
         locale: LiveLocale = .zhCN,
-        hasVision: Bool
+        hasVision: Bool,
+        cameraOff: Bool = false
     ) -> String {
         let cfg = locale.config
+        // camera-off marker 跟 locale 走: 中文用中文标记, 其他 locale 用英文
+        let cameraOffNote: String = {
+            guard cameraOff else { return "" }
+            return cfg.userPromptPrefix.isEmpty ? "(camera off) " : "(摄像头未开启) "
+        }()
+
+        if hasVision {
+            // 视觉轮: 不 wrap persona, 只给一个轻量 task hint, 避免被 marker parser
+            // 误判成 ◐/○ 后吞掉回答。hasVision=true 时模型直接看图, 不需要也不该带
+            // cameraOffNote (本来就有画面)。
+            let visionNote = cfg.userPromptPrefix.isEmpty
+                ? "(camera frame attached; start with ✓; answer as what I can see or describe the scene directly, not as what the user sees) "
+                : "(本轮已附带摄像头画面；请以✓开头，用“我看到”或直接描述画面，不要说“你看到”；简短回答，必要时补充细节) "
+            return visionNote + userTranscript
+        }
         guard !cfg.userPromptPrefix.isEmpty else {
             // locale 选择不带 per-turn persona 提醒 (e.g. 英文)
-            return userTranscript
+            return cameraOffNote + userTranscript
         }
-        if hasVision {
-            // 视觉轮: 不 wrap, 让 user message 是纯查询, 给图像/视觉 token 让位
-            return userTranscript
-        }
+        // 非视觉轮: 按 locale 维持原有 persona wrapping。
         // userPromptPrefix 已包含 locale 需要的尾部空格 (中文 "你是" 不带空格连接)。
-        return "(\(cfg.userPromptPrefix)\(cfg.personaName)) \(userTranscript)"
+        return "\(cameraOffNote)(\(cfg.userPromptPrefix)\(cfg.personaName)) \(userTranscript)"
     }
 }

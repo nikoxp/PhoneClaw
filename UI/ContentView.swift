@@ -1099,7 +1099,9 @@ struct ContentView: View {
     }
 
     private func enterLiveMode() {
-        guard canEnterLiveMode else { return }
+        guard currentModelCapabilities.supportsLive else { return }
+        showLiveMode = true
+
         engine.cancelActiveGeneration()
         if audioCapture.isCapturing {
             _ = audioCapture.stopCapture()
@@ -1107,7 +1109,6 @@ struct ContentView: View {
         _ = audioCapture.consumeLatestSnapshot()
         isInputFocused = false
         showAttachmentTray = false
-        showLiveMode = true
     }
 
     @MainActor
