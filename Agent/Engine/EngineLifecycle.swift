@@ -82,8 +82,9 @@ extension AgentEngine {
         guard !didSetup else { return }
         didSetup = true
 
-        applyModelSelection()
         installer.refreshInstallStates()
+        reconcileSelectedModelIfUnavailable()
+        applyModelSelection()
         loadSystemPrompt()       // 从 SYSPROMPT.md 注入 system prompt
         resetPromptPipelineState()
         messages = sessionStore.loadPersistedSessions()
@@ -185,7 +186,53 @@ extension AgentEngine {
         return catalog.select(modelID: config.selectedModelID)
     }
 
+    func installedModelID(preferredIDs: [String?]) -> String? {
+        for modelID in preferredIDs.compactMap({ $0 }) {
+            guard let model = availableModels.first(where: { $0.id == modelID }),
+                  installer.artifactPath(for: model) != nil else {
+                continue
+            }
+            return model.id
+        }
+
+        return availableModels.first { model in
+            installer.artifactPath(for: model) != nil
+        }?.id
+    }
+
+    @discardableResult
+    func reconcileSelectedModelIfUnavailable(refreshInstallStates: Bool = false) -> Bool {
+        if refreshInstallStates {
+            installer.refreshInstallStates()
+        }
+
+        if let currentModel = availableModels.first(where: { $0.id == config.selectedModelID }),
+           installer.artifactPath(for: currentModel) != nil {
+            _ = catalog.select(modelID: currentModel.id)
+            return false
+        }
+
+        guard let resolvedModelID = installedModelID(preferredIDs: [catalog.loadedModel?.id, config.selectedModelID]) else {
+            _ = catalog.select(modelID: config.selectedModelID)
+            return false
+        }
+
+        guard resolvedModelID != config.selectedModelID else {
+            _ = catalog.select(modelID: resolvedModelID)
+            return false
+        }
+
+        config.selectedModelID = resolvedModelID
+        UserDefaults.standard.set(
+            resolvedModelID,
+            forKey: ModelConfig.selectedModelDefaultsKey
+        )
+        _ = catalog.select(modelID: resolvedModelID)
+        return true
+    }
+
     func reloadModel() {
+        reconcileSelectedModelIfUnavailable(refreshInstallStates: true)
         let selectedModelID = config.selectedModelID
         let backend = config.preferredBackend
         let speculative = config.enableSpeculativeDecoding
@@ -220,6 +267,29 @@ extension AgentEngine {
         }
     }
 
+    func removeModel(_ model: ModelDescriptor) async {
+        let wasRuntimeModel = coordinator.sessionState.activeModelID == model.id
+            || catalog.loadedModel?.id == model.id
+
+        if wasRuntimeModel {
+            isProcessing = false
+            await coordinator.unload()
+            catalog.markUnloaded()
+        }
+
+        do {
+            try installer.remove(model: model)
+        } catch {
+            log("[Model] remove \(model.id) failed: \(error.localizedDescription)")
+        }
+
+        installer.refreshInstallStates()
+
+        if config.selectedModelID == model.id || catalog.selectedModel.id == model.id {
+            _ = reconcileSelectedModelIfUnavailable()
+        }
+    }
+
     // MARK: - Permissions
 
     func permissionStatuses() -> [AppPermissionKind: AppPermissionStatus] {
@@ -242,7 +312,7 @@ extension AgentEngine {
     }
 
     func cancelActiveGeneration() {
-        guard isProcessing || inference.isGenerating else { return }
+        guard isProcessing || isModelGenerating || inference.isGenerating || coordinator.currentTransaction != nil else { return }
 
         // 1. Mark transaction as cancelling BEFORE inference.cancel(),
         //    so onComplete → finishTurn() sees .cancelling (not .streaming).

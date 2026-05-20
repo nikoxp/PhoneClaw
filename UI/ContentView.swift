@@ -32,9 +32,28 @@ private extension View {
     }
 }
 
+private extension ModelInstallState {
+    var isTransientInstallState: Bool {
+        switch self {
+        case .checkingSource, .downloading:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 // MARK: - 主入口
 
 private enum CaptureOrigin { case menu, holdToTalk }
+private struct TopStatusHint: Equatable {
+    let id: String
+    let text: String
+    let symbolName: String?
+    let showsProgress: Bool
+    let isWarning: Bool
+}
+
 private struct ScrollSignal: Equatable {
     let lastMessageID: UUID?
     let messageCount: Int
@@ -71,8 +90,10 @@ struct ContentView: View {
     @State private var importedAudioSnapshot: AudioCaptureSnapshot?
     @State private var importedAudioFilename: String?
     @State private var holdToTalkASR = ASRService()
-    /// ASR 模型 (Whisper) 没下载时弹的提示, 引导用户去配置页 LIVE 语音模型下载.
-    @State private var showASRMissingAlert = false
+    /// 语音模型未就绪时弹的应用内提示, 引导用户去配置页下载 LIVE 语音模型。
+    @State private var showVoiceModelPrompt = false
+    @State private var transientTopNotice: TopStatusHint?
+    @State private var topNoticeDismissTask: Task<Void, Never>?
     /// ASR warmup 任务进行中. 用来在 mic 按钮 / 按住说话按钮上显示 loading 反馈,
     /// 因为 WhisperKit 首次冷启动 ~15s (Core ML 编译 + tokenizer 自动下载),
     /// 没视觉提示用户会以为没在加载。
@@ -173,6 +194,9 @@ struct ContentView: View {
             }
             .animation(.easeOut(duration: 0.2), value: showAttachmentTray)
         }
+        .overlay {
+            voiceModelPromptOverlay
+        }
         .task {
             guard !ProcessInfo.processInfo.isRunningXCTest else { return }
             engine.setup()
@@ -207,6 +231,16 @@ struct ContentView: View {
                 showAttachmentTray = false
             }
         }
+        .onChange(of: engine.installer.installStates) { oldStates, newStates in
+            handleInstallStateChange(from: oldStates, to: newStates)
+        }
+        .onChange(of: engine.coordinator.sessionState) { _, newState in
+            handleRuntimeStateChange(newState)
+        }
+        .onDisappear {
+            topNoticeDismissTask?.cancel()
+            topNoticeDismissTask = nil
+        }
         .fullScreenCover(isPresented: $showHistory) {
             SessionHistorySheet(engine: engine)
         }
@@ -221,22 +255,96 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showConfigurations) {
             ConfigurationsView(engine: engine)
         }
-        .alert(
-            tr("开启语音输入", "Set up voice input"),
-            isPresented: $showASRMissingAlert
-        ) {
-            Button(tr("下载", "Download")) {
-                showConfigurations = true
-            }
-            Button(tr("稍后", "Not now"), role: .cancel) {}
-        } message: {
-            Text({
-                let mb = LiveModelDefinition.estimatedSizeMB
-                return tr(
-                    "首次使用需要下载语音模型（约 \(mb) MB）。",
-                    "First use needs a one-time voice model download (~\(mb) MB)."
+    }
+
+    @ViewBuilder
+    private var voiceModelPromptOverlay: some View {
+        if showVoiceModelPrompt {
+            ZStack {
+                Color.black.opacity(0.42)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        dismissVoiceModelPrompt()
+                    }
+
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(tr("语音模型未就绪", "Voice models not ready"))
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Theme.textPrimary)
+
+                        Text({
+                            let mb = LiveModelDefinition.estimatedSizeMB
+                            return tr(
+                                "首次使用语音输入或 LIVE 需要下载语音模型，约 \(mb) MB。",
+                                "Voice input and LIVE need a voice model download, about \(mb) MB."
+                            )
+                        }())
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    HStack(spacing: 10) {
+                        voicePromptButton(
+                            title: tr("稍后", "Not now"),
+                            isPrimary: false
+                        ) {
+                            dismissVoiceModelPrompt()
+                        }
+
+                        voicePromptButton(
+                            title: tr("下载", "Download"),
+                            isPrimary: true
+                        ) {
+                            dismissVoiceModelPrompt()
+                            showConfigurations = true
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
+                .frame(maxWidth: 330)
+                .background(
+                    Theme.bgElevated.opacity(0.98),
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                 )
-            }())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Theme.border.opacity(0.86), lineWidth: 1)
+                        .allowsHitTesting(false)
+                )
+                .shadow(color: Color.black.opacity(0.24), radius: 22, x: 0, y: 14)
+                .padding(.horizontal, 28)
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.985)))
+            .zIndex(20)
+        }
+    }
+
+    private func voicePromptButton(
+        title: String,
+        isPrimary: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 15, weight: isPrimary ? .semibold : .medium))
+                .foregroundStyle(isPrimary ? Theme.bg : Theme.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(
+                    isPrimary ? Theme.textPrimary : Theme.bgHover,
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dismissVoiceModelPrompt() {
+        withAnimation(.easeInOut(duration: 0.16)) {
+            showVoiceModelPrompt = false
         }
     }
 
@@ -405,7 +513,14 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
 
-            Spacer()
+            Spacer(minLength: 12)
+
+            if let hint = activeTopStatusHint {
+                topStatusHintView(hint)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            Spacer(minLength: 12)
 
             // 右:settings gear — 裸 icon,opacity 0.72 让它"浮在空气里".
             Button(action: { showConfigurations = true }) {
@@ -418,35 +533,186 @@ struct ContentView: View {
         }
         .padding(.horizontal, Theme.inputPadH)
         .padding(.vertical, 10)
+        .animation(.easeInOut(duration: 0.18), value: activeTopStatusHint)
     }
 
-    private var topModelStatusText: String {
-        // isModelReady = .ready; isModelGenerating = .generating.
-        // Both mean the model is loaded and active — show the model name.
-        if engine.isModelReady || engine.isModelGenerating {
-            return engine.catalog.modelDisplayName
+    private var activeTopStatusHint: TopStatusHint? {
+        modelLifecycleTopStatusHint ?? transientTopNotice
+    }
+
+    private var modelLifecycleTopStatusHint: TopStatusHint? {
+        if let downloadHint = activeModelDownloadHint {
+            return downloadHint
         }
 
+        switch engine.coordinator.sessionState {
+        case .loading(let modelID, let phase):
+            return .init(
+                id: "runtime-loading-\(modelID)-\(String(describing: phase))",
+                text: runtimeLoadingText(for: phase),
+                symbolName: nil,
+                showsProgress: true,
+                isWarning: false
+            )
+        case .switching:
+            return .init(
+                id: "runtime-switching",
+                text: tr("正在切换模型", "Switching model"),
+                symbolName: nil,
+                showsProgress: true,
+                isWarning: false
+            )
+        case .unloading:
+            return .init(
+                id: "runtime-unloading",
+                text: tr("正在释放模型", "Unloading model"),
+                symbolName: nil,
+                showsProgress: true,
+                isWarning: false
+            )
+        default:
+            return nil
+        }
+    }
+
+    private var activeModelDownloadHint: TopStatusHint? {
         let selectedModel = engine.catalog.selectedModel
-        switch engine.installer.installState(for: selectedModel.id) {
-        case .notInstalled:
-            if engine.installer.hasResumableDownload(for: selectedModel.id) {
-                return tr("可继续下载模型", "Resume model download")
-            }
-            if engine.installer.artifactPath(for: selectedModel) == nil {
-                return tr("请先下载模型", "Download a model first")
-            }
-            return engine.statusMessage
+        let selectedState = engine.installer.installState(for: selectedModel.id)
+        return downloadHint(for: selectedModel, state: selectedState)
+    }
+
+    private func downloadHint(for model: ModelDescriptor, state: ModelInstallState) -> TopStatusHint? {
+        switch state {
         case .checkingSource:
-            return tr("正在准备下载...", "Preparing download...")
-        case .downloading:
-            return tr("正在下载模型...", "Downloading model...")
-        case .downloaded:
-            return tr("模型已下载，等待加载", "Model downloaded, waiting to load")
-        case .bundled:
-            return tr("模型已内置，等待加载", "Bundled model, waiting to load")
-        case .failed:
-            return tr("模型下载失败", "Model download failed")
+            return .init(
+                id: "download-checking-\(model.id)",
+                text: tr("正在准备下载模型", "Preparing model download"),
+                symbolName: nil,
+                showsProgress: true,
+                isWarning: false
+            )
+        case .downloading(let completedFiles, let totalFiles, _):
+            return .init(
+                id: "download-active-\(model.id)",
+                text: modelDownloadText(
+                    progress: engine.installer.downloadProgress[model.id],
+                    completedFiles: completedFiles,
+                    totalFiles: totalFiles
+                ),
+                symbolName: nil,
+                showsProgress: true,
+                isWarning: false
+            )
+        default:
+            return nil
+        }
+    }
+
+    private func modelDownloadText(
+        progress: DownloadProgress?,
+        completedFiles: Int,
+        totalFiles: Int
+    ) -> String {
+        if let fraction = progress?.fractionCompleted {
+            let percent = max(0, min(99, Int((fraction * 100).rounded(.down))))
+            return tr("正在下载模型 \(percent)%", "Downloading model \(percent)%")
+        }
+        if totalFiles > 1 {
+            return tr("正在下载模型 \(completedFiles)/\(totalFiles)", "Downloading model \(completedFiles)/\(totalFiles)")
+        }
+        return tr("正在下载模型", "Downloading model")
+    }
+
+    private func runtimeLoadingText(for phase: LoadPhase) -> String {
+        switch phase {
+        case .preparingAccelerator:
+            return tr("正在准备模型", "Preparing model")
+        case .loadingWeights:
+            return tr("正在加载模型", "Loading model")
+        case .openingSession:
+            return tr("正在打开会话", "Opening session")
+        }
+    }
+
+    private func topStatusHintView(_ hint: TopStatusHint) -> some View {
+        HStack(spacing: 6) {
+            if hint.showsProgress {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.72)
+                    .tint(hint.isWarning ? Theme.accent : Theme.textSecondary)
+                    .frame(width: 12, height: 12)
+            } else if let symbolName = hint.symbolName {
+                Image(systemName: symbolName)
+                    .font(.system(size: 10, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
+            }
+
+            Text(hint.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
+        }
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(hint.isWarning ? Theme.accent : Theme.textSecondary)
+        .padding(.horizontal, 10)
+        .frame(height: UIScale.topStatusChipDiameter)
+        .frame(maxWidth: 230)
+        .background(Theme.bgHover.opacity(0.58), in: Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(Theme.border.opacity(0.42), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        )
+        .id(hint.id)
+    }
+
+    private func handleInstallStateChange(
+        from oldStates: [String: ModelInstallState],
+        to newStates: [String: ModelInstallState]
+    ) {
+        for (modelID, newState) in newStates where oldStates[modelID] != newState {
+            guard !newState.isTransientInstallState else { continue }
+            if case .failed = newState {
+                showTransientTopNotice(
+                    tr("模型下载失败", "Model download failed"),
+                    symbolName: "exclamationmark.circle",
+                    isWarning: true
+                )
+            }
+        }
+    }
+
+    private func handleRuntimeStateChange(_ state: RuntimeSessionState) {
+        if case .failed = state {
+            showTransientTopNotice(
+                tr("模型加载失败", "Model load failed"),
+                symbolName: "exclamationmark.circle",
+                isWarning: true
+            )
+        }
+    }
+
+    private func showTransientTopNotice(
+        _ text: String,
+        symbolName: String = "info.circle",
+        isWarning: Bool = false,
+        durationNanoseconds: UInt64 = 2_800_000_000
+    ) {
+        topNoticeDismissTask?.cancel()
+
+        let notice = TopStatusHint(
+            id: "notice-\(UUID().uuidString)",
+            text: text,
+            symbolName: symbolName,
+            showsProgress: false,
+            isWarning: isWarning
+        )
+        transientTopNotice = notice
+
+        topNoticeDismissTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: durationNanoseconds)
+            guard !Task.isCancelled, transientTopNotice == notice else { return }
+            transientTopNotice = nil
         }
     }
 
@@ -699,7 +965,7 @@ struct ContentView: View {
                 action: { engine.cancelActiveGeneration() }
             )
         }
-        if canSend {
+        if hasComposedInput {
             // chip 保持中性灰, 只 icon 从 waveform 变成 arrow.up.
             // 形态变化驱动状态语义, 不靠 brand color — Arc/Linear/Apple Music 同款逻辑.
             // brand color 只留给 hero element (orb), chip 永远克制.
@@ -707,7 +973,14 @@ struct ContentView: View {
                 icon: "arrow.up",
                 bgColor: Theme.bgHover,
                 fgColor: Theme.textSecondary,
-                action: { Task { await send() } }
+                action: {
+                    guard canSend else {
+                        let message = tr("请先下载模型", "Download a model first")
+                        showTransientTopNotice(message)
+                        return
+                    }
+                    Task { await send() }
+                }
             )
         }
         // idle 或 语音模式 → LIVE entry. 不管中央是文字框还是 hold-to-talk,
@@ -726,6 +999,7 @@ struct ContentView: View {
     /// 语音模式: keyboard — 点击回键盘模式
     private var modeToggleButton: some View {
         let icon = isVoiceInputMode ? "keyboard" : "mic"
+        let isEnteringVoiceDisabled = !isVoiceInputMode && !liveVoiceModelsReady
         let action: () -> Void = isVoiceInputMode
             ? { exitVoiceInputMode() }
             : { enterVoiceInputMode() }
@@ -734,22 +1008,22 @@ struct ContentView: View {
                 .font(.system(size: UIScale.waveformIconSize, weight: .regular))
                 .foregroundStyle(Theme.textSecondary)
                 .symbolReplaceTransition()
-                .opacity(0.55)  // 比 LIVE chip 更弱, 强化"辅助" 而非 "主操作"
+                .opacity(isEnteringVoiceDisabled ? 0.24 : 0.55)  // 比 LIVE chip 更弱, 强化"辅助" 而非 "主操作"
                 .frame(width: UIScale.chipDiameter, height: UIScale.chipDiameter)
                 .contentShape(Rectangle())  // 保持 chip 大小的点击区
         }
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.15), value: isVoiceInputMode)
+        .animation(.easeInOut(duration: 0.15), value: liveVoiceModelsReady)
     }
 
     private var trailingDynamicButton: some View {
         let style = trailingButtonStyle
         // waveform = LIVE entry 是 idle 辅助态, icon 17pt + opacity 0.68 让它"浮起来";
         // send / stop 是行动态, 用 18pt 满 opacity 强调.
-        let isIdleAux = !canSend && !canCancelGeneration
+        let isIdleAux = !hasComposedInput && !canCancelGeneration
         let iconSize: CGFloat = isIdleAux ? UIScale.waveformIconSize : UIScale.chipIconSize
-        // LIVE 模型未就绪时, 进一步压暗 (0.68 → 0.32) 暗示不可用. 点击仍会触发 action,
-        // 由 enterLiveMode 内部 guard 兜底 (no-op).
+        // LIVE 模型未就绪时, 进一步压暗 (0.68 → 0.32) 暗示不可用。
         let liveDimmed = isIdleAux && !canEnterLiveMode
         let iconOpacity: Double = isIdleAux
             ? (liveDimmed ? 0.32 : UIScale.waveformIconOpacity)
@@ -764,17 +1038,16 @@ struct ContentView: View {
                 .background(style.bgColor, in: Circle())
         }
         .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.15), value: canSend)
+        .animation(.easeInOut(duration: 0.15), value: hasComposedInput)
         .animation(.easeInOut(duration: 0.15), value: canCancelGeneration)
         .animation(.easeInOut(duration: 0.15), value: canEnterLiveMode)
     }
 
-    /// 进入语音模式:检查 ASR 模型, 预热, 切换 UI 状态.
+    /// 进入语音模式:检查语音模型, 预热, 切换 UI 状态.
     private func enterVoiceInputMode() {
-        // 切到语音模式前先检查 Whisper 模型有没有下载. 没有就弹提示让用户去
-        // 配置页 LIVE 语音模型下载, 不要切到语音模式让用户白按住一下才发现没用。
-        if LiveModelDefinition.resolve(for: LiveModelDefinition.activeASR) == nil {
-            showASRMissingAlert = true
+        // 切到语音模式前先检查 LIVE 语音模型是否完整, 避免用户进入后才发现不能用。
+        if !liveVoiceModelsReady {
+            showVoiceModelsRequiredPrompt()
             return
         }
         withAnimation(.easeInOut(duration: 0.2)) {
@@ -1039,14 +1312,15 @@ struct ContentView: View {
         }
     }
 
+    private var hasComposedInput: Bool {
+        !inputText.trimmingCharacters(in: .whitespaces).isEmpty
+            || !selectedImages.isEmpty
+            || hasCompletedDraft
+            || importedAudioSnapshot != nil
+    }
+
     private var canSend: Bool {
-        (
-            !inputText.trimmingCharacters(in: .whitespaces).isEmpty
-                || !selectedImages.isEmpty
-                || hasCompletedDraft
-                || importedAudioSnapshot != nil
-        )
-        && !engine.isProcessing && engine.isModelReady
+        hasComposedInput && !engine.isProcessing && engine.isModelReady
     }
 
     /// 当前选中模型的能力声明。UI 按它 gate Live / 思考 / MTP 等按钮显示。
@@ -1060,7 +1334,11 @@ struct ContentView: View {
     }
 
     private var canEnterLiveMode: Bool {
-        engine.isModelReady && currentModelCapabilities.supportsLive
+        engine.isModelReady && currentModelCapabilities.supportsLive && liveVoiceModelsReady
+    }
+
+    private var liveVoiceModelsReady: Bool {
+        LiveModelDefinition.isAvailable
     }
 
     /// 顶部 "思考" 按钮是否显示。只有声明 supportsThinking=true 的模型才显示, 否则
@@ -1099,7 +1377,19 @@ struct ContentView: View {
     }
 
     private func enterLiveMode() {
-        guard currentModelCapabilities.supportsLive else { return }
+        guard liveVoiceModelsReady else {
+            showVoiceModelsRequiredPrompt()
+            return
+        }
+        guard engine.isModelReady else {
+            showTransientTopNotice(tr("请先下载模型", "Download a model first"))
+            return
+        }
+        guard currentModelCapabilities.supportsLive else {
+            showTransientTopNotice(tr("当前模型不支持 LIVE", "Current model does not support LIVE"))
+            return
+        }
+
         showLiveMode = true
 
         engine.cancelActiveGeneration()
@@ -1109,6 +1399,12 @@ struct ContentView: View {
         _ = audioCapture.consumeLatestSnapshot()
         isInputFocused = false
         showAttachmentTray = false
+    }
+
+    private func showVoiceModelsRequiredPrompt() {
+        withAnimation(.easeInOut(duration: 0.16)) {
+            showVoiceModelPrompt = true
+        }
     }
 
     @MainActor

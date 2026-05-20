@@ -182,41 +182,52 @@ class AgentEngine {
 
             // MiniCPM-V backend: bundleResolver 从 descriptor.companionFiles 找
             // 真实文件名 (按 CompanionRole 查), 不再硬编码命名约定。
-            let miniCPMV = MiniCPMVBackend(bundleResolver: { modelID in
-                guard let desc = resolvedCatalog.availableModels.first(where: { $0.id == modelID }),
-                      desc.artifactKind == .ggufBundle,
-                      let llmPath = resolvedInstaller.artifactPath(for: desc) else {
-                    return nil
+            let miniCPMV = MiniCPMVBackend(
+                bundleResolver: { modelID in
+                    guard let desc = resolvedCatalog.availableModels.first(where: { $0.id == modelID }),
+                          desc.artifactKind == .ggufBundle,
+                          let llmPath = resolvedInstaller.artifactPath(for: desc) else {
+                        return nil
+                    }
+                    let baseDir = llmPath.deletingLastPathComponent()
+
+                    guard let mmprojCompanion = desc.companionFiles.first(where: { $0.role == .multimodalProjector }) else {
+                        return nil
+                    }
+                    let mmprojCanonicalPath = baseDir.appendingPathComponent(mmprojCompanion.localResourceName)
+
+                    // Backward compat: legacy sideload name vs canonical OBS name.
+                    let mmprojLegacyPath = baseDir.appendingPathComponent("MiniCPM-V-4_6-mmproj-f16.gguf")
+                    let mmprojPath: URL
+                    if FileManager.default.fileExists(atPath: mmprojCanonicalPath.path) {
+                        mmprojPath = mmprojCanonicalPath
+                    } else if FileManager.default.fileExists(atPath: mmprojLegacyPath.path) {
+                        mmprojPath = mmprojLegacyPath
+                    } else {
+                        return nil
+                    }
+
+                    let resolvedCoreml: URL? = desc.companionFiles
+                        .first(where: { $0.role == .coreMLVisionEncoder })
+                        .map { baseDir.appendingPathComponent($0.localResourceName) }
+                        .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+
+                    return MTMDPathBundle(
+                        modelPath: llmPath,
+                        mmprojPath: mmprojPath,
+                        coremlPath: resolvedCoreml
+                    )
+                },
+                onModelLoaded: { [weak resolvedCatalog] modelID in
+                    if let cat = resolvedCatalog,
+                       let desc = cat.availableModels.first(where: { $0.id == modelID }) {
+                        cat.markLoaded(desc)
+                    }
+                },
+                onModelUnloaded: { [weak resolvedCatalog] in
+                    resolvedCatalog?.markUnloaded()
                 }
-                let baseDir = llmPath.deletingLastPathComponent()
-
-                guard let mmprojCompanion = desc.companionFiles.first(where: { $0.role == .multimodalProjector }) else {
-                    return nil
-                }
-                let mmprojCanonicalPath = baseDir.appendingPathComponent(mmprojCompanion.localResourceName)
-
-                // Backward compat: legacy sideload name vs canonical OBS name.
-                let mmprojLegacyPath = baseDir.appendingPathComponent("MiniCPM-V-4_6-mmproj-f16.gguf")
-                let mmprojPath: URL
-                if FileManager.default.fileExists(atPath: mmprojCanonicalPath.path) {
-                    mmprojPath = mmprojCanonicalPath
-                } else if FileManager.default.fileExists(atPath: mmprojLegacyPath.path) {
-                    mmprojPath = mmprojLegacyPath
-                } else {
-                    return nil
-                }
-
-                let resolvedCoreml: URL? = desc.companionFiles
-                    .first(where: { $0.role == .coreMLVisionEncoder })
-                    .map { baseDir.appendingPathComponent($0.localResourceName) }
-                    .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
-
-                return MTMDPathBundle(
-                    modelPath: llmPath,
-                    mmprojPath: mmprojPath,
-                    coremlPath: resolvedCoreml
-                )
-            })
+            )
 
             self.inference = BackendDispatcher(
                 liteRT: liteRT,

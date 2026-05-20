@@ -47,7 +47,21 @@ public class MTMDWrapper: ObservableObject {
     
     /// 线程锁
     private let lock = NSLock()
-    
+
+    /// 跨 token piece 缓冲尾部 partial UTF-8 字节, 避免一个汉字被切到多个
+    /// token piece 时 `String(cString:)` 把 invalid 序列替换成 U+FFFD (��)。
+    ///
+    /// 背景: llama.cpp 的 token piece 按 BPE token 边界切, 跟 UTF-8 codepoint
+    /// 边界完全不对齐。一个中文字 (3 字节 UTF-8) 经常被切成 2 个 token piece,
+    /// 每个 piece 单独不是合法 UTF-8 序列。Swift `String(cString:)` 默认把
+    /// invalid bytes 替换成 `\u{FFFD}`, 表现为乱码 `��`。
+    ///
+    /// 修复策略: 把 piece 当字节流拼到这个 buffer, 每次取出最长合法 UTF-8
+    /// 前缀作为本轮 tokenString, partial 尾部留给下一个 token piece。
+    /// 流末尾 (is_end=true) 时即使有 leftover 也强制 lossy decode 吐出, 避免
+    /// EOS 之前的字节永远憋着。
+    private var pendingUTF8Bytes: Data = Data()
+
     // MARK: - Initialization
     
     public init() {
@@ -338,9 +352,10 @@ public class MTMDWrapper: ObservableObject {
         generationState = .idle
         currentToken = .empty
         fullOutput = ""
+        pendingUTF8Bytes = Data()
         hasContent = false
         params = nil
-        
+
         print("MTMDWrapper: 上下文已重置")
     }
     
@@ -357,12 +372,13 @@ public class MTMDWrapper: ObservableObject {
             updateGenerationState(.failed(.contextNotInitialized))
             return
         }
-        
+
         fullOutput = ""
-        
+        pendingUTF8Bytes = Data()  // 新一轮生成开始, 清掉上一轮可能残留的 partial 字节
+
         // 生成循环
         while !Task.isCancelled {
-            
+
             // 在后台线程执行 C 函数调用
             let cToken = await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -370,21 +386,42 @@ public class MTMDWrapper: ObservableObject {
                     continuation.resume(returning: token)
                 }
             }
-            
-            var tokenString = cToken.token != nil ? String(cString: cToken.token) : ""
-            
+
+            // BPE token piece 不保证 UTF-8 边界对齐 (例: 中文字 3 字节经常被
+            // 切到 2 个 piece)。把 vendor 返回的 char* 当字节流拼到 buffer,
+            // 再提取最长合法 UTF-8 前缀; 尾部 partial 字节留给下一轮。
+            //
+            // 内存管理: cmtmd_loop 返回的 token 是 malloc/strdup 出来的 C 字符串
+            // (见 CMTMDBridge.h: "用完调 cmtmd_string_free"), 拷贝完字节后必须
+            // 立刻释放, 否则长回答 / Live 多轮场景会按 token 累积泄漏。
+            if let rawPtr = cToken.token {
+                defer { cmtmd_string_free(rawPtr) }
+                let len = Int(strlen(rawPtr))
+                if len > 0 {
+                    pendingUTF8Bytes.append(Data(bytes: rawPtr, count: len))
+                }
+            }
+
+            var tokenString: String
+            if cToken.is_end {
+                // 流末尾: 即使 buffer 里还有不完整字节也强制 lossy decode 吐出,
+                // 避免 EOS 之前的字节永远憋在 buffer 里。
+                tokenString = String(data: pendingUTF8Bytes, encoding: .utf8)
+                    ?? String(decoding: pendingUTF8Bytes, as: UTF8.self)
+                pendingUTF8Bytes = Data()
+            } else {
+                let (decoded, leftover) = Self.extractLongestValidUTF8Prefix(pendingUTF8Bytes)
+                pendingUTF8Bytes = leftover
+                tokenString = decoded
+            }
+
             // 在主线程更新状态
             currentToken = MTMDToken(content: tokenString, isEnd: cToken.is_end)
             if fullOutput.isEmpty && tokenString == "\n" {
                 tokenString = ""
             }
             fullOutput += tokenString
-            
-            // 释放 C 字符串
-            if cToken.token != nil {
-                // mtmd_ios_string_free(cToken.token)
-            }
-            
+
             // 检查是否生成完成
             if cToken.is_end {
                 updateGenerationState(.completed)
@@ -397,10 +434,28 @@ public class MTMDWrapper: ObservableObject {
                 generationTask = nil
                 return
             }
-            
+
             // 避免过度占用 CPU
             try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
         }
+    }
+
+    /// 从 buffer 里取出最长合法 UTF-8 前缀, 把剩余 partial 字节留给下一个 token piece。
+    ///
+    /// UTF-8 字符最长 4 字节, 所以最多回退 3 字节就一定能找到合法前缀
+    /// (或者发现剩下整段都是垃圾)。时间复杂度 O(min(4, n))。
+    private static func extractLongestValidUTF8Prefix(_ data: Data) -> (decoded: String, leftover: Data) {
+        if data.isEmpty { return ("", Data()) }
+        let maxLeftover = min(3, data.count)
+        for tail in 0...maxLeftover {
+            let validLen = data.count - tail
+            let head = data.prefix(validLen)
+            if let str = String(data: head, encoding: .utf8) {
+                return (str, Data(data.suffix(tail)))
+            }
+        }
+        // 全部字节都不是合法 UTF-8 起始序列, 极少见。当脏数据丢弃, 不污染下一轮。
+        return ("", Data())
     }
     
     /// 给同步阻塞型 C 调用包一层 watchdog 超时。

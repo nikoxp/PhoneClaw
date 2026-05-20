@@ -52,6 +52,9 @@ public protocol ModelInstaller: AnyObject {
     /// 是否存在可继续下载的 partial/manifest 状态
     func hasResumableDownload(for modelID: String) -> Bool
 
+    /// 是否存在这个模型的本地文件或断点残留
+    func hasLocalArtifacts(for model: ModelDescriptor) -> Bool
+
     /// 获取模型文件的本地路径 (nil = 未安装)
     func artifactPath(for model: ModelDescriptor) -> URL?
 
@@ -68,5 +71,9 @@ public protocol ModelInstaller: AnyObject {
 public extension ModelInstaller {
     func hasResumableDownload(for modelID: String) -> Bool {
         false
+    }
+
+    func hasLocalArtifacts(for model: ModelDescriptor) -> Bool {
+        artifactPath(for: model) != nil
     }
 }

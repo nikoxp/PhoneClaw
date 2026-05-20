@@ -34,6 +34,11 @@ final class LiteRTModelStore: ModelInstaller {
     // MARK: - Init
 
     init() {
+        // 启动期一次性清理已下线的 V4.6 CoreML companion 残留 (~3 GB)。
+        // 必须在 refreshInstallStates() 之前跑, 否则 installer 会把残留目录
+        // 当成"已安装"算进状态里。详见 cleanupObsoleteCoreMLV46 doc。
+        cleanupObsoleteCoreMLV46()
+
         refreshInstallStates()
 
         // 监听模型加载失败（文件损坏）→ 立即刷新安装状态
@@ -48,6 +53,131 @@ final class LiteRTModelStore: ModelInstaller {
                 }
             }
             self?.refreshInstallStates()
+        }
+    }
+
+    // MARK: - Obsolete File Cleanup
+
+    /// MiniCPM-V 4.6 CoreML/ANE companion 的存量清理。
+    ///
+    /// 背景:
+    ///   2026-05 对齐 OpenBMB main (commit 54a9b024), V4.6 整段 CoreML/ANE 路径
+    ///   下线 (OpenBMB 上游 bridge 已移除 coreml_path 字段, PredefinedModels
+    ///   已移除 companion 声明, MiniCPMVBackend 始终传空 coremlPath)。但老用户
+    ///   磁盘上可能还残留:
+    ///     - coreml_minicpmv46_vit_all_f32.mlmodelc.zip      ~1 GB
+    ///     - coreml_minicpmv46_vit_all_f32.mlmodelc/         ~2 GB
+    ///     - (历史包) coreml_minicpmv46_vit_all_f32.mlpackage
+    ///     - (历史包) coreml_minicpmv46_vit_all_f16.mlpackage
+    ///   不主动清的话 4 GB 设备用户白占 ~3 GB Documents 空间且自己分不清能不能删。
+    ///
+    /// 此外, 下载到一半就放弃的用户在 `.downloads/<assetID>/` 下还会有这两类残留:
+    ///     - coreml_minicpmv46_vit_all_f32.mlmodelc.zip.part        (URLSession 续传缓存)
+    ///     - coreml_minicpmv46_vit_all_f32.mlmodelc.zip.resumeData  (NSURLSessionDownloadTask resume token)
+    /// 这些路径规则见 DownloadManifestStore.partialFileURL/resumeDataURL。
+    ///
+    /// 实现要点 (best-effort, 幂等):
+    ///   - 候选文件逐个 best-effort 删除, 单个失败不阻塞其它
+    ///   - partial 残留只删 coreml zip 这一个文件级别的 .part / .resumeData,
+    ///     **不整体 purge asset workspace** —— 否则会误删主 LLM / mmproj 还
+    ///     未完成的断点续传状态, 让用户重新下整个 1.6 GB。
+    ///   - 只有"所有候选都不在磁盘"时才 set UserDefaults flag, 失败下次启动重试
+    ///   - 完全没有候选时也 set flag (避免每次启动空跑 fileExists)
+    ///   - manifest JSON 必须同步重写: DownloadManifestStore.resumeState 取
+    ///     max(partialBytes, file.downloadedBytes) 决定断点, 即使 .part 已删,
+    ///     manifest 里 downloadedBytes>0 的旧 coreml entry 仍会让 V4.6 被标
+    ///     成"可继续下载"。只 filter 掉 coreml 条目, 主 LLM / mmproj 保留。
+    private static let coreMLV46CleanupKey = "PhoneClaw.coreMLV46Cleanup.v1"
+
+    /// V4.6 asset ID; 经 sanitizedAssetID 不变 (字符全在允许集), 因此 .downloads 子目录
+    /// 名就是它本身。这里 hardcode 而不调 DownloadManifestStore.workspaceDirectory,
+    /// 是为了避免 cleanup 跨 actor 边界 (init 同步路径)。
+    private static let miniCPMV4_6AssetDirectoryName = "minicpm-v-4_6-q4_k_m"
+
+    /// 已下线的 CoreML zip 文件名, 用于匹配 .part / .resumeData 前缀。
+    private static let obsoleteCoreMLZipFileName = "coreml_minicpmv46_vit_all_f32.mlmodelc.zip"
+
+    private func cleanupObsoleteCoreMLV46() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.coreMLV46CleanupKey) else { return }
+
+        let fm = FileManager.default
+        var allClear = true
+
+        // 1. 最终落盘文件 / 解压目录
+        let finalCandidates = [
+            "coreml_minicpmv46_vit_all_f32.mlmodelc.zip",
+            "coreml_minicpmv46_vit_all_f32.mlmodelc",
+            "coreml_minicpmv46_vit_all_f32.mlpackage",
+            "coreml_minicpmv46_vit_all_f16.mlpackage",
+        ]
+        for name in finalCandidates {
+            let url = modelsDirectory.appendingPathComponent(name)
+            guard fm.fileExists(atPath: url.path) else { continue }
+            do {
+                try fm.removeItem(at: url)
+                print("[Migration] removed obsolete V4.6 CoreML artifact: \(name)")
+            } catch {
+                print("[Migration] failed to remove \(name): \(error.localizedDescription)")
+                allClear = false
+            }
+        }
+
+        // 2. partial 下载残留 (.part / .resumeData) — 只清 coreml zip 这一个
+        //    文件相关的, 不动主 LLM / mmproj 的断点。
+        let v46WorkspaceURL = modelsDirectory
+            .appendingPathComponent(DownloadManifestStore.workspaceDirectoryName, isDirectory: true)
+            .appendingPathComponent(Self.miniCPMV4_6AssetDirectoryName, isDirectory: true)
+        if let entries = try? fm.contentsOfDirectory(atPath: v46WorkspaceURL.path) {
+            let prefix = Self.obsoleteCoreMLZipFileName  // 例: "..mlmodelc.zip"
+            // 我们要匹配 "<prefix>.part" / "<prefix>.resumeData", 不包括 prefix 本身
+            // (那是已落盘文件, 但它应该已经在 step 1 删过; 不在 modelsDirectory 一级
+            // 出现在 workspace 里, 是因为安装时会先在 staging 后挪走 — staging 也清掉)。
+            for entry in entries where entry.hasPrefix(prefix) {
+                let url = v46WorkspaceURL.appendingPathComponent(entry)
+                do {
+                    try fm.removeItem(at: url)
+                    print("[Migration] removed obsolete V4.6 CoreML download residue: \(entry)")
+                } catch {
+                    print("[Migration] failed to remove \(entry): \(error.localizedDescription)")
+                    allClear = false
+                }
+            }
+        }
+
+        // 3. manifest JSON 重写 — 只移除 coreml zip 条目, 保留主 LLM / mmproj。
+        //    必要性: DownloadManifestStore.resumeState 取 max(partialBytes,
+        //    file.downloadedBytes) 来判断断点 (见 DownloadManifestStore.swift),
+        //    所以即使 .part 已删, 只要 manifest 里这条 entry 的 downloadedBytes>0
+        //    还是会被识别成 resumable, UI 上把 V4.6 标成"可继续下载"误导用户。
+        //    主 LLM / mmproj 的条目不动, 保它们的断点续传状态。
+        let manifestURL = v46WorkspaceURL
+            .appendingPathComponent(DownloadManifestStore.manifestFileName, isDirectory: false)
+        if fm.fileExists(atPath: manifestURL.path) {
+            do {
+                let data = try Data(contentsOf: manifestURL)
+                let manifest = try JSONDecoder.downloadManifestDecoder.decode(DownloadManifest.self, from: data)
+                let filtered = manifest.files.filter { $0.relativePath != Self.obsoleteCoreMLZipFileName }
+                if filtered.count != manifest.files.count {
+                    let updated = DownloadManifest(
+                        schemaVersion: manifest.schemaVersion,
+                        assetID: manifest.assetID,
+                        createdAt: manifest.createdAt,
+                        updatedAt: Date(),
+                        files: filtered
+                    )
+                    let out = try JSONEncoder.downloadManifestEncoder.encode(updated)
+                    try out.write(to: manifestURL, options: [.atomic])
+                    print("[Migration] rewrote V4.6 manifest to drop CoreML entry")
+                }
+            } catch {
+                print("[Migration] failed to rewrite V4.6 download manifest: \(error.localizedDescription)")
+                allClear = false
+            }
+        }
+
+        if allClear {
+            defaults.set(true, forKey: Self.coreMLV46CleanupKey)
         }
     }
 
@@ -75,7 +205,11 @@ final class LiteRTModelStore: ModelInstaller {
         }
 
         let initialProgress = await initialDownloadProgress(for: model)
-        installStates[modelID] = .downloading(completedFiles: 0, totalFiles: 1, currentFile: model.fileName)
+        installStates[modelID] = .downloading(
+            completedFiles: 0,
+            totalFiles: 1 + model.companionFiles.count,
+            currentFile: model.fileName
+        )
         downloadProgress[modelID] = initialProgress
 
         let task = Task { [weak self] in
@@ -146,6 +280,7 @@ final class LiteRTModelStore: ModelInstaller {
             throw LiteRTDownloadError.invalidResponse
         }
         try await validateDownloadedFile(model: model, at: path)
+        try await validateRequiredCompanions(for: model, baseDirectory: path.deletingLastPathComponent())
 
         // 下载完成后处理: 解压归档型 companion (例如 ANE .mlmodelc.zip).
         // 失败处理:
@@ -309,7 +444,7 @@ final class LiteRTModelStore: ModelInstaller {
     }
 
     private func initialDownloadProgress(for model: ModelDescriptor) async -> DownloadProgress {
-        let fallbackTotal = model.expectedFileSize > 0 ? model.expectedFileSize : nil
+        let fallbackTotal = model.totalDownloadSize > 0 ? model.totalDownloadSize : nil
         guard let state = try? await downloadManifestStore().resumeState(for: model.id),
               state.downloadedBytes > 0 else {
             return DownloadProgress(totalBytes: fallbackTotal, currentFile: model.fileName)
@@ -439,10 +574,32 @@ final class LiteRTModelStore: ModelInstaller {
     }
 
     func remove(model: ModelDescriptor) throws {
-        guard let path = artifactPath(for: model) else { return }
-        try FileManager.default.removeItem(at: path)
+        activeTasks[model.id]?.cancel()
+        activeTasks[model.id] = nil
+        let fileManager = FileManager.default
+        let candidateDirectories = Set(
+            primaryArtifactCandidates(for: model)
+                .filter(isUserModelPath)
+                .map { $0.deletingLastPathComponent() }
+        )
+
+        for artifact in primaryArtifactCandidates(for: model)
+            where isUserModelPath(artifact) && fileManager.fileExists(atPath: artifact.path) {
+            try fileManager.removeItem(at: artifact)
+        }
+
+        for directory in candidateDirectories {
+            for companion in model.companionFiles {
+                for url in companionStorageCandidates(for: companion, baseDirectory: directory) where fileManager.fileExists(atPath: url.path) {
+                    try? fileManager.removeItem(at: url)
+                }
+            }
+        }
+
         Task { try? await downloadCoordinator().purge(assetID: model.id) }
         installStates[model.id] = .notInstalled
+        resumableModelIDs.remove(model.id)
+        downloadProgress[model.id] = nil
     }
 
     func cancelInstall(modelID: String) {
@@ -464,42 +621,153 @@ final class LiteRTModelStore: ModelInstaller {
         resumableModelIDs.contains(modelID)
     }
 
+    func hasLocalArtifacts(for model: ModelDescriptor) -> Bool {
+        if resumableModelIDs.contains(model.id) || downloadProgress[model.id] != nil {
+            return true
+        }
+
+        let fileManager = FileManager.default
+        let userArtifactCandidates = primaryArtifactCandidates(for: model).filter(isUserModelPath)
+        if userArtifactCandidates.contains(where: { fileManager.fileExists(atPath: $0.path) }) {
+            return true
+        }
+
+        let candidateDirectories = Set(userArtifactCandidates.map { $0.deletingLastPathComponent() })
+        for directory in candidateDirectories {
+            for companion in model.companionFiles {
+                if companionStorageCandidates(for: companion, baseDirectory: directory)
+                    .contains(where: { fileManager.fileExists(atPath: $0.path) }) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
     func artifactPath(for model: ModelDescriptor) -> URL? {
+        for candidate in primaryArtifactCandidates(for: model) {
+            guard completeFileExists(at: candidate, expectedSize: model.expectedFileSize) else {
+                continue
+            }
+
+            let baseDirectory = candidate.deletingLastPathComponent()
+            guard requiredCompanionsAvailable(for: model, baseDirectory: baseDirectory) else {
+                continue
+            }
+
+            return candidate
+        }
+
+        return nil
+    }
+
+    private func primaryArtifactCandidates(for model: ModelDescriptor) -> [URL] {
+        var candidates: [URL] = []
+
         // 1. 优先检查 app bundle（打包进去的模型）
         let baseName = (model.fileName as NSString).deletingPathExtension
         let ext = (model.fileName as NSString).pathExtension
         if let bundlePath = Bundle.main.url(forResource: baseName, withExtension: ext) {
-            return bundlePath
+            candidates.append(bundlePath)
         }
         // 2. fallback 到 Documents/models/（下载的模型）
-        let path = modelsDirectory.appendingPathComponent(model.fileName)
-        return FileManager.default.fileExists(atPath: path.path) ? path : nil
+        candidates.append(modelsDirectory.appendingPathComponent(model.fileName))
+        return candidates
+    }
+
+    private func completeFileExists(at url: URL, expectedSize: Int64) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        if isDirectory.boolValue {
+            return true
+        }
+
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64 else {
+            return false
+        }
+        guard expectedSize > 0 else {
+            return true
+        }
+        return size >= expectedSize * 9 / 10
+    }
+
+    private func requiredCompanionsAvailable(for model: ModelDescriptor, baseDirectory: URL) -> Bool {
+        model.companionFiles
+            .filter(\.isRequired)
+            .allSatisfy { companion in
+                companionStorageCandidates(for: companion, baseDirectory: baseDirectory)
+                    .contains { completeFileExists(at: $0, expectedSize: companion.expectedFileSize) }
+            }
+    }
+
+    private func companionStorageCandidates(for companion: CompanionFile, baseDirectory: URL) -> [URL] {
+        var candidates: [URL] = []
+
+        candidates.append(baseDirectory.appendingPathComponent(companion.localResourceName))
+        if companion.fileName != companion.localResourceName {
+            candidates.append(baseDirectory.appendingPathComponent(companion.fileName))
+        }
+        if companion.role == .multimodalProjector {
+            candidates.append(baseDirectory.appendingPathComponent("MiniCPM-V-4_6-mmproj-f16.gguf"))
+        }
+
+        return Array(Set(candidates))
+    }
+
+    private func validateRequiredCompanions(for model: ModelDescriptor, baseDirectory: URL) async throws {
+        for companion in model.companionFiles where companion.isRequired {
+            let available = companionStorageCandidates(for: companion, baseDirectory: baseDirectory)
+                .contains { completeFileExists(at: $0, expectedSize: companion.expectedFileSize) }
+            guard available else {
+                try? await downloadCoordinator().purge(assetID: model.id)
+                throw LiteRTDownloadError.invalidResponse
+            }
+        }
     }
 
     func refreshInstallStates() {
         for model in ModelDescriptor.allModels {
+            if activeTasks[model.id] != nil {
+                continue
+            }
+
             if let path = artifactPath(for: model) {
-                // 校验文件大小 — 不完整的文件自动清理
-                if model.expectedFileSize > 0,
-                   let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
-                   let size = attrs[.size] as? Int64,
-                   size < model.expectedFileSize * 9 / 10 {
-                    let expectedMB = model.expectedFileSize / 1_000_000
-                    let actualMB = size / 1_000_000
-                    PCLog.debug("[ModelStore] ⚠️ \(model.fileName) 文件不完整 (\(actualMB)MB/\(expectedMB)MB)，已自动清理")
-                    try? FileManager.default.removeItem(at: path)
-                    Task { try? await downloadCoordinator().purge(assetID: model.id) }
-                    installStates[model.id] = .notInstalled
-                } else {
-                    installStates[model.id] = .downloaded
-                    resumableModelIDs.remove(model.id)
-                    downloadProgress[model.id] = nil
-                }
+                installStates[model.id] = path.path.hasPrefix(Bundle.main.bundlePath) ? .bundled : .downloaded
+                resumableModelIDs.remove(model.id)
+                downloadProgress[model.id] = nil
             } else {
+                purgeIncompletePrimaryArtifactIfNeeded(for: model)
                 installStates[model.id] = .notInstalled
             }
         }
         refreshResumableStates()
+    }
+
+    private func purgeIncompletePrimaryArtifactIfNeeded(for model: ModelDescriptor) {
+        guard model.expectedFileSize > 0 else { return }
+
+        for artifact in primaryArtifactCandidates(for: model)
+            where isUserModelPath(artifact) && FileManager.default.fileExists(atPath: artifact.path) {
+            guard !completeFileExists(at: artifact, expectedSize: model.expectedFileSize),
+                  let attrs = try? FileManager.default.attributesOfItem(atPath: artifact.path),
+                  let size = attrs[.size] as? Int64 else {
+                continue
+            }
+
+            let expectedMB = model.expectedFileSize / 1_000_000
+            let actualMB = size / 1_000_000
+            PCLog.debug("[ModelStore] ⚠️ \(model.fileName) 文件不完整 (\(actualMB)MB/\(expectedMB)MB)，已自动清理")
+            try? FileManager.default.removeItem(at: artifact)
+            Task { try? await downloadCoordinator().purge(assetID: model.id) }
+        }
+    }
+
+    private func isUserModelPath(_ url: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(modelsDirectory.standardizedFileURL.path)
     }
 
     private func refreshResumableStates() {

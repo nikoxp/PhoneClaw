@@ -14,7 +14,7 @@ struct ConfigurationsView: View {
 
     // 本地编辑状态（确认后才应用）
     @State private var selectedModelID = ModelDescriptor.defaultModel.id
-    @State private var preferredBackend: String = "cpu"   // "gpu" / "cpu"
+    @State private var preferredBackend: String = ModelConfig.defaultPreferredBackend   // "gpu" / "cpu"
     @State private var enableSpeculativeDecoding: Bool = false
     @State private var systemPrompt: String = ""
     @State private var permissionStatuses: [AppPermissionKind: AppPermissionStatus] = [:]
@@ -22,6 +22,7 @@ struct ConfigurationsView: View {
     @State private var liveDownloader = LiveModelStore()
     @State private var didLoadCurrentSettings = false
     @State private var activeInfoTopic: SettingsInfoTopic?
+    @State private var modelSelectionMessage: String?
 
     var body: some View {
         ZStack {
@@ -128,40 +129,51 @@ struct ConfigurationsView: View {
     }
 
     private var settingsBottomBar: some View {
-        HStack(spacing: 18) {
-            Button {
-                showSkillsManager = true
-            } label: {
-                Label(tr("技能", "Skills"), systemImage: "puzzlepiece.extension")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(SettingsStyle.secondary)
-            }
-            .buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(modelSelectionMessage ?? " ")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(SettingsStyle.danger)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .opacity(modelSelectionMessage == nil ? 0 : 1)
+                .frame(height: 16, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer()
+            HStack(spacing: 18) {
+                Button {
+                    showSkillsManager = true
+                } label: {
+                    Label(tr("技能", "Skills"), systemImage: "puzzlepiece.extension")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(SettingsStyle.secondary)
+                }
+                .buttonStyle(.plain)
 
-            Button(tr("取消", "Cancel")) {
-                dismiss()
-            }
-            .font(.system(size: 15, weight: .regular))
-            .foregroundStyle(SettingsStyle.secondary)
+                Spacer()
 
-            Button {
-                if applySettings() {
+                Button(tr("取消", "Cancel")) {
                     dismiss()
                 }
-            } label: {
-                Text(tr("确定", "OK"))
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(SettingsStyle.onPrimary)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 11)
-                    .background(SettingsStyle.primary, in: Capsule())
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(SettingsStyle.secondary)
+
+                Button {
+                    if applySettings() {
+                        dismiss()
+                    }
+                } label: {
+                    Text(tr("确定", "OK"))
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(SettingsStyle.onPrimary)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 11)
+                        .background(SettingsStyle.primary, in: Capsule())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 34)
-        .padding(.top, 12)
+        .padding(.top, 8)
         .padding(.bottom, 18)
         .background(Theme.bg)
     }
@@ -204,7 +216,7 @@ struct ConfigurationsView: View {
 
     private var systemPromptTab: some View {
         VStack(alignment: .leading, spacing: 18) {
-            labelWithInfo(tr("系统提示词", "System Prompt"), topic: .systemPrompt)
+            sectionLabel(tr("系统提示词", "System Prompt"))
 
             TextEditor(text: $systemPrompt)
                 .font(.system(size: 14, weight: .regular))
@@ -257,7 +269,7 @@ struct ConfigurationsView: View {
         let state = model.map { engine.installer.installState(for: $0.id) } ?? .notInstalled
 
         return VStack(alignment: .leading, spacing: 12) {
-            labelWithInfo(tr("已启用模型", "Enabled Model"), topic: .enabledModel)
+            sectionLabel(runtimeHeroLabel(for: model, state: state))
 
             Text(model?.displayName ?? tr("未选择模型", "No model selected"))
                 .font(.system(size: 31, weight: .semibold))
@@ -274,7 +286,7 @@ struct ConfigurationsView: View {
 
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            labelWithInfo(tr("模型", "Models"), topic: .models)
+            sectionLabel(tr("模型", "Models"))
 
             VStack(spacing: 0) {
                 ForEach(Array(engine.availableModels.enumerated()), id: \.element.id) { index, model in
@@ -288,6 +300,7 @@ struct ConfigurationsView: View {
                     }
                 }
             }
+
         }
     }
 
@@ -323,7 +336,7 @@ struct ConfigurationsView: View {
             }
 
             if case let .downloading(completedFiles, totalFiles, _) = state {
-                downloadProgressBadge(
+                downloadProgressLine(
                     modelID: model.id,
                     completedFiles: completedFiles,
                     totalFiles: totalFiles
@@ -342,30 +355,36 @@ struct ConfigurationsView: View {
         .onTapGesture {
             if isSelectable {
                 selectedModelID = model.id
+                modelSelectionMessage = nil
             }
         }
     }
 
     private func labelWithInfo(_ title: String, topic: SettingsInfoTopic, compact: Bool = false) -> some View {
         HStack(spacing: compact ? 6 : 7) {
-            Text(title)
-                .font(.system(size: compact ? 15 : 13, weight: compact ? .regular : .medium))
-                .foregroundStyle(compact ? SettingsStyle.ink : SettingsStyle.secondary)
+            sectionLabel(title, compact: compact)
 
             Button {
                 activeInfoTopic = topic
             } label: {
                 ZStack {
                     Circle()
-                        .strokeBorder(SettingsStyle.tertiary.opacity(0.78), lineWidth: 1)
-                        .frame(width: compact ? 15 : 16, height: compact ? 15 : 16)
+                        .strokeBorder(SettingsStyle.tertiary.opacity(0.42), lineWidth: 0.8)
+                        .frame(width: compact ? 12 : 13, height: compact ? 12 : 13)
                     Text("!")
-                        .font(.system(size: compact ? 9 : 10, weight: .semibold))
-                        .foregroundStyle(SettingsStyle.tertiary)
+                        .font(.system(size: compact ? 7 : 7.5, weight: .medium))
+                        .foregroundStyle(SettingsStyle.tertiary.opacity(0.62))
                 }
             }
             .buttonStyle(.plain)
+            .opacity(0.78)
         }
+    }
+
+    private func sectionLabel(_ title: String, compact: Bool = false) -> some View {
+        Text(title)
+            .font(.system(size: compact ? 15 : 13, weight: compact ? .regular : .medium))
+            .foregroundStyle(compact ? SettingsStyle.ink : SettingsStyle.secondary)
     }
 
     private func modelIsSelectable(_ state: ModelInstallState) -> Bool {
@@ -375,6 +394,22 @@ struct ConfigurationsView: View {
         default:
             return false
         }
+    }
+
+    private func runtimeHeroLabel(for model: ModelDescriptor?, state: ModelInstallState) -> String {
+        guard let model else {
+            return tr("未选择模型", "No Model Selected")
+        }
+
+        guard modelIsSelectable(state) else {
+            return tr("待下载模型", "Model Pending Download")
+        }
+
+        if engine.catalog.loadedModel?.id == model.id && engine.isModelReady {
+            return tr("已加载模型", "Loaded Model")
+        }
+
+        return tr("已选择模型", "Selected Model")
     }
 
     private func modelInstallLabel(for state: ModelInstallState, model: ModelDescriptor) -> String {
@@ -392,6 +427,9 @@ struct ConfigurationsView: View {
         case .checkingSource:
             return tr("检查中", "Checking")
         case .downloading:
+            if let metrics = engine.installer.downloadProgress[model.id] {
+                return tr("下载中 · \(downloadMetricsText(metrics))", "Downloading · \(downloadMetricsText(metrics))")
+            }
             return tr("下载中", "Downloading")
         case .failed:
             return tr("下载失败", "Download failed")
@@ -419,7 +457,7 @@ struct ConfigurationsView: View {
         case .checkingSource:
             return tr("检查中", "Checking")
         case .downloading:
-            return tr("下载中", "Downloading")
+            return tr("下载完成后可启用", "Available after download")
         case .failed:
             return tr("模型下载失败", "Download failed")
         }
@@ -480,13 +518,30 @@ struct ConfigurationsView: View {
         engine.availableModels.first(where: { $0.id == selectedModelID })?.family
     }
 
+    private var currentModelSupportsSpeculativeDecoding: Bool {
+        currentModelFamily == .gemma4
+    }
+
+    private var speculativeDecodingToggleBinding: Binding<Bool> {
+        Binding(
+            get: {
+                currentModelSupportsSpeculativeDecoding ? enableSpeculativeDecoding : false
+            },
+            set: { newValue in
+                if currentModelSupportsSpeculativeDecoding {
+                    enableSpeculativeDecoding = newValue
+                }
+            }
+        )
+    }
+
     private var backendSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            labelWithInfo(tr("推理", "Inference"), topic: .inference)
+            sectionLabel(tr("推理", "Inference"))
 
             VStack(spacing: 0) {
                 HStack(alignment: .center, spacing: 12) {
-                    labelWithInfo(tr("推理方式", "Inference Mode"), topic: .inferenceMode, compact: true)
+                    sectionLabel(tr("推理方式", "Inference Mode"), compact: true)
 
                     Spacer(minLength: 16)
 
@@ -501,23 +556,23 @@ struct ConfigurationsView: View {
                 }
                 .padding(.vertical, 4)
 
-                if currentModelFamily == .gemma4 {
-                    Rectangle()
-                        .fill(SettingsStyle.hairline)
-                        .frame(height: 1)
-                        .padding(.vertical, 16)
+                Rectangle()
+                    .fill(SettingsStyle.hairline)
+                    .frame(height: 1)
+                    .padding(.vertical, 16)
 
-                    HStack(alignment: .center, spacing: 12) {
-                        labelWithInfo(tr("推测解码", "Speculative Decoding"), topic: .speculativeDecoding, compact: true)
+                HStack(alignment: .center, spacing: 12) {
+                    labelWithInfo(tr("推测解码", "Speculative Decoding"), topic: .speculativeDecoding, compact: true)
 
-                        Spacer()
+                    Spacer()
 
-                        Toggle("", isOn: $enableSpeculativeDecoding)
-                            .labelsHidden()
-                            .tint(SettingsStyle.ink)
-                    }
-                    .padding(.vertical, 2)
+                    Toggle("", isOn: speculativeDecodingToggleBinding)
+                        .labelsHidden()
+                        .tint(SettingsStyle.ink)
+                        .disabled(!currentModelSupportsSpeculativeDecoding)
                 }
+                .opacity(currentModelSupportsSpeculativeDecoding ? 1 : 0.42)
+                .padding(.vertical, 2)
             }
         }
     }
@@ -530,7 +585,7 @@ struct ConfigurationsView: View {
     /// 切换立即触发 SwiftUI observation, 整个 app 视图重渲染新语言。
     private var languageSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            labelWithInfo(tr("语言", "Language"), topic: .language)
+            sectionLabel(tr("语言", "Language"))
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 12) {
@@ -550,7 +605,7 @@ struct ConfigurationsView: View {
 
                 // 同 backendSection: 用自定义 segmented control 替代 SwiftUI Picker.
                 // setter 里只快速 set LanguageService 让 UI 立即重渲染拿到新文案;
-                // 重活 (reload skill / 改 SYSPROMPT / 重置 statusMessage) 推到下个
+                // 重活 (reload skill / 改 SYSPROMPT) 推到下个
                 // runloop tick 异步跑, 防止按钮 tap 后阻塞主线程造成"按下不响应"的卡顿感。
                 CustomSegmentedPicker(
                     selection: Binding(
@@ -569,21 +624,12 @@ struct ConfigurationsView: View {
                             //   3. SYSPROMPT.md 物理文件: 跑 locale-mismatch 迁移 (~10-30ms 磁盘 IO)
                             //   4. 本地 @State systemPrompt: TextEditor 绑的是这个, 必须手动重拉
                             //   5. Live 语音模型: active ASR/TTS 依赖当前语言, 切语言后必须刷新状态
-                            //   6. inference.statusMessage: 存的是 tr() 当时的快照 string, 重写
                             Task { @MainActor in
                                 _ = engine.skillRegistry.reloadAll()
                                 engine.reloadSkills()
                                 engine.loadSystemPrompt()
                                 systemPrompt = engine.config.systemPrompt
                                 liveDownloader.refreshState()
-                                if !engine.isModelReady {
-                                    if let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }),
-                                       engine.installer.artifactPath(for: selectedModel) == nil {
-                                        engine.setStatusMessage(tr("请先下载模型", "Download a model first"))
-                                    } else {
-                                        engine.setStatusMessage(tr("等待加载模型...", "Waiting to load model..."))
-                                    }
-                                }
                             }
                         }
                     ),
@@ -763,8 +809,8 @@ struct ConfigurationsView: View {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(tr(
-                        "下载中 \(completedFiles)/\(totalFiles)",
-                        "Downloading \(completedFiles)/\(totalFiles)"
+                        "文件 \(completedFiles)/\(totalFiles)",
+                        "Files \(completedFiles)/\(totalFiles)"
                     ))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(SettingsStyle.ink)
@@ -854,7 +900,7 @@ struct ConfigurationsView: View {
 
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            labelWithInfo(tr("权限", "Permissions"), topic: .permissions)
+            sectionLabel(tr("权限", "Permissions"))
                 .padding(.bottom, 18)
 
             ForEach(Array(AppPermissionKind.allCases.enumerated()), id: \.element.id) { index, kind in
@@ -880,7 +926,7 @@ struct ConfigurationsView: View {
                     .opacity(0.76)
                     .frame(width: 24, height: 24)
 
-            labelWithInfo(permissionTitle(kind), topic: .permission(kind), compact: true)
+            sectionLabel(permissionTitle(kind), compact: true)
 
             Spacer(minLength: 10)
 
@@ -936,43 +982,118 @@ struct ConfigurationsView: View {
         switch state {
         case .notInstalled:
             let isResumable = engine.installer.hasResumableDownload(for: model.id)
-            Button(isResumable ? tr("继续下载", "Resume") : tr("下载", "Download")) {
-                Task {
-                    try await engine.installer.install(model: model)
+            let canRemoveLocalData = isResumable || engine.installer.hasLocalArtifacts(for: model)
+            HStack(spacing: 8) {
+                Button(isResumable ? tr("继续下载", "Resume") : tr("下载", "Download")) {
+                    modelSelectionMessage = nil
+                    Task {
+                        do {
+                            try await engine.installer.install(model: model)
+                            await MainActor.run {
+                                engine.installer.refreshInstallStates()
+                                selectModelIfCurrentUnavailable(model)
+                            }
+                        } catch is CancellationError {
+                            await MainActor.run {
+                                engine.installer.refreshInstallStates()
+                                modelSelectionMessage = nil
+                            }
+                        } catch {
+                            await MainActor.run {
+                                engine.installer.refreshInstallStates()
+                                modelSelectionMessage = modelInstallFailureMessage(error)
+                            }
+                        }
+                    }
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SettingsStyle.ink)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(SettingsStyle.selectedFill, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(SettingsStyle.hairline, lineWidth: 1)
+                        .allowsHitTesting(false)
+                )
+
+                if canRemoveLocalData {
+                    Button(tr("移除", "Remove")) {
+                        removeInstalledModel(model)
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SettingsStyle.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(SettingsStyle.controlFill, in: Capsule())
                 }
             }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(SettingsStyle.ink)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(SettingsStyle.selectedFill, in: Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(SettingsStyle.hairline, lineWidth: 1)
-                    .allowsHitTesting(false)
-            )
         case .checkingSource:
             modelBadge(tr("检查中", "Checking"))
         case .downloading:
-            EmptyView()
-        case .downloaded, .bundled:
-            EmptyView()
-        case .failed:
-            Button(tr("重试", "Retry")) {
-                Task {
-                    try await engine.installer.install(model: model)
-                }
+            Button(tr("取消", "Cancel")) {
+                engine.installer.cancelInstall(modelID: model.id)
+            }
+            .font(.system(size: 12, weight: .regular))
+            .foregroundStyle(SettingsStyle.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        case .downloaded:
+            Button(tr("移除", "Remove")) {
+                removeInstalledModel(model)
             }
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(SettingsStyle.ink)
+            .foregroundStyle(SettingsStyle.secondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .background(SettingsStyle.selectedFill, in: Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(SettingsStyle.hairline, lineWidth: 1)
-                    .allowsHitTesting(false)
-            )
+            .background(SettingsStyle.controlFill, in: Capsule())
+        case .bundled:
+            modelBadge(tr("内置", "Bundled"), color: SettingsStyle.secondary)
+        case .failed:
+            HStack(spacing: 8) {
+                Button(tr("重试", "Retry")) {
+                    modelSelectionMessage = nil
+                    Task {
+                        do {
+                            try await engine.installer.install(model: model)
+                            await MainActor.run {
+                                engine.installer.refreshInstallStates()
+                                selectModelIfCurrentUnavailable(model)
+                            }
+                        } catch is CancellationError {
+                            await MainActor.run {
+                                engine.installer.refreshInstallStates()
+                                modelSelectionMessage = nil
+                            }
+                        } catch {
+                            await MainActor.run {
+                                engine.installer.refreshInstallStates()
+                                modelSelectionMessage = modelInstallFailureMessage(error)
+                            }
+                        }
+                    }
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SettingsStyle.ink)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(SettingsStyle.selectedFill, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(SettingsStyle.hairline, lineWidth: 1)
+                        .allowsHitTesting(false)
+                )
+
+                Button(tr("移除", "Remove")) {
+                    removeInstalledModel(model)
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SettingsStyle.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(SettingsStyle.controlFill, in: Capsule())
+            }
         }
     }
 
@@ -985,7 +1106,23 @@ struct ConfigurationsView: View {
             .background(SettingsStyle.controlFill, in: Capsule())
     }
 
-    private func downloadProgressBadge(
+    private func modelInstallFailureMessage(_: Error) -> String {
+        tr("下载失败，请重试。", "Download failed. Please try again.")
+    }
+
+    private func removeInstalledModel(_ model: ModelDescriptor) {
+        Task {
+            await engine.removeModel(model)
+            await MainActor.run {
+                if selectedModelID == model.id {
+                    selectedModelID = resolvedInitialModelID()
+                }
+                modelSelectionMessage = nil
+            }
+        }
+    }
+
+    private func downloadProgressLine(
         modelID: String,
         completedFiles: Int,
         totalFiles: Int
@@ -995,44 +1132,28 @@ struct ConfigurationsView: View {
         let activeFileFraction = metrics?.fractionCompleted.map { min(1, max(0, $0)) } ?? 0
         let value = min(Double(safeTotal), Double(min(completedFiles, safeTotal)) + activeFileFraction)
 
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(tr(
-                        "下载中 \(completedFiles)/\(totalFiles)",
-                        "Downloading \(completedFiles)/\(totalFiles)"
-                    ))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(SettingsStyle.ink)
-                    .lineLimit(1)
-
-                    if let metrics {
-                        Text(downloadMetricsText(metrics))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(SettingsStyle.tertiary)
-                            .lineLimit(1)
-                    }
+        return VStack(alignment: .leading, spacing: 5) {
+            GeometryReader { proxy in
+                let fraction = min(1, max(0, value / Double(safeTotal)))
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(SettingsStyle.hairline)
+                    Capsule()
+                        .fill(Theme.accentMuted.opacity(0.92))
+                        .frame(width: max(3, proxy.size.width * fraction))
                 }
-
-                Spacer(minLength: 8)
-
-                Button(tr("取消", "Cancel")) {
-                    engine.installer.cancelInstall(modelID: modelID)
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(SettingsStyle.ink)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(SettingsStyle.selectedFill, in: Capsule())
-                .fixedSize(horizontal: true, vertical: true)
             }
+            .frame(height: 3)
 
-            ProgressView(value: value, total: Double(safeTotal))
-                .progressViewStyle(.linear)
+            Text(tr(
+                "文件 \(completedFiles)/\(totalFiles)",
+                "Files \(completedFiles)/\(totalFiles)"
+            ))
+            .font(.system(size: 11, weight: .regular))
+            .foregroundStyle(SettingsStyle.tertiary)
+            .lineLimit(1)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(SettingsStyle.controlFill, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.top, 2)
     }
 
     private func downloadMetricsText(_ metrics: DownloadProgress) -> String {
@@ -1125,37 +1246,69 @@ struct ConfigurationsView: View {
 
     private func loadCurrentSettings() {
         engine.installer.refreshInstallStates()
+        _ = engine.reconcileSelectedModelIfUnavailable()
         liveDownloader.refreshState()
-        selectedModelID = engine.catalog.loadedModel?.id ?? engine.config.selectedModelID
+        selectedModelID = resolvedInitialModelID()
         preferredBackend = engine.config.preferredBackend
         enableSpeculativeDecoding = engine.config.enableSpeculativeDecoding
         systemPrompt = engine.config.systemPrompt
+        modelSelectionMessage = nil
         refreshPermissionStatuses()
+    }
+
+    private func resolvedInitialModelID() -> String {
+        engine.installedModelID(preferredIDs: [
+            engine.catalog.loadedModel?.id,
+            engine.config.selectedModelID
+        ]) ?? engine.config.selectedModelID
+    }
+
+    private func selectModelIfCurrentUnavailable(_ model: ModelDescriptor) {
+        guard engine.installer.artifactPath(for: model) != nil else {
+            return
+        }
+
+        if let currentModel = selectedModel,
+           engine.installer.artifactPath(for: currentModel) != nil {
+            return
+        }
+
+        selectedModelID = model.id
     }
 
     private func applySettings() -> Bool {
         let modelChanged = engine.config.selectedModelID != selectedModelID
         let backendChanged = engine.config.preferredBackend != preferredBackend
-        let mtpChanged = engine.config.enableSpeculativeDecoding != enableSpeculativeDecoding
 
         guard let selectedModel = engine.availableModels.first(where: { $0.id == selectedModelID }),
               engine.installer.artifactPath(for: selectedModel) != nil else {
-            engine.setStatusMessage(tr("请先下载模型", "Download a model first"))
+            modelSelectionMessage = tr(
+                "请选择已下载模型，或先下载当前模型。",
+                "Choose an installed model, or download the current model first."
+            )
             return false
         }
 
+        // 非 Gemma 4 模型不支持 MTP; UI 的 toggle binding 已经 gate 住交互,
+        // 但 @State `enableSpeculativeDecoding` 可能仍保留上次 Gemma 4 时的
+        // true 值。这里按 selectedModel 重算 effective 值, 避免 "UI 显示关闭
+        // 但写回 config 是 true" 的不一致 (会被 reloadModel 持久化)。
+        let effectiveSpeculativeDecoding =
+            selectedModel.family == .gemma4 ? enableSpeculativeDecoding : false
+        let mtpChanged = engine.config.enableSpeculativeDecoding != effectiveSpeculativeDecoding
+
+        modelSelectionMessage = nil
         engine.config.systemPrompt = systemPrompt
         engine.config.preferredBackend = preferredBackend
-        engine.config.enableSpeculativeDecoding = enableSpeculativeDecoding
+        engine.config.enableSpeculativeDecoding = effectiveSpeculativeDecoding
 
         // 同步采样参数到 LLM (沿用 ModelConfig 默认值; 下次生成立即生效)
         engine.applySamplingConfig()
 
         engine.config.selectedModelID = selectedModelID
-        let needsLoad = !engine.isModelReady || engine.catalog.loadedModel?.id != selectedModelID
         // backend / MTP 变更也要 reload — LiteRTLMEngine 在 load 时构造,
         // 这两个参数都不可热切换。
-        if modelChanged || backendChanged || mtpChanged || needsLoad {
+        if modelChanged || backendChanged || mtpChanged {
             engine.reloadModel()
         }
         return true
@@ -1324,7 +1477,10 @@ private enum SettingsInfoTopic: Identifiable {
         case .inferenceMode:
             return tr("GPU 通常速度更高，CPU 通常更省内存。", "GPU is usually faster; CPU usually uses less memory.")
         case .speculativeDecoding:
-            return tr("部分短回复可能更快，默认关闭。", "Some short replies may be faster. Off by default.")
+            return tr(
+                "仅 Gemma 4 可用；部分短回复可能更快，默认关闭。",
+                "Available for Gemma 4 only. Some short replies may be faster. Off by default."
+            )
         case .language:
             return tr(
                 "默认跟随系统。手动选择后，界面会立即切换，新对话会使用新的语言偏好。",
