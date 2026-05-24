@@ -143,10 +143,18 @@ private final class OrbBundleSchemeHandler: NSObject, WKURLSchemeHandler {
 
         let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let filename = path.isEmpty ? "index.html" : path
-        let resourceName = (filename as NSString).deletingPathExtension
         let resourceExt = (filename as NSString).pathExtension
 
-        guard let fileURL = Bundle.main.url(forResource: resourceName, withExtension: resourceExt.isEmpty ? nil : resourceExt) else {
+        guard !filename.split(separator: "/").contains(where: { $0 == ".." }),
+              let resourceRoot = Bundle.main.resourceURL else {
+            let response = HTTPURLResponse(url: url, statusCode: 400, httpVersion: nil, headerFields: nil)!
+            urlSchemeTask.didReceive(response)
+            urlSchemeTask.didFinish()
+            return
+        }
+
+        let fileURL = resourceRoot.appendingPathComponent(filename, isDirectory: false)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
             let response = HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)!
             urlSchemeTask.didReceive(response)
             urlSchemeTask.didFinish()
@@ -211,8 +219,8 @@ private enum OrbWebSource {
   <script type="importmap">
     {
       "imports": {
-        "three": "https://unpkg.com/three@0.176.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.176.0/examples/jsm/"
+        "three": "orb://bundle/OrbWebAssets/three/build/three.module.min.js",
+        "three/addons/": "orb://bundle/OrbWebAssets/three/examples/jsm/"
       }
     }
   </script>

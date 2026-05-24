@@ -6,7 +6,14 @@ import Foundation
 // 下载存储到 Documents/models/<fileName>。
 // 底层使用 ResumableAssetDownloader，partial/manifest 位于 Documents/models/.downloads/<modelID>/。
 
+// `@MainActor`: 4 个状态字典 (installStates / downloadProgress / resumableModelIDs /
+// activeTasks) 是 SwiftUI @Observable 状态源, 必须收敛到主线程隔离, 否则会被
+// 安装协程 (Task { await install(...) }) 和 UI 重渲撞出 Swift Dictionary 的
+// 并发破坏 — 见 TestFlight 1.4.0(27) 崩溃。
+// 例外: 纯文件系统查询的 `artifactPath` 及其辅助函数标 `nonisolated`, 让
+// LiteRTBackend / MiniCPMVBackend 在 nonisolated async load 路径里能同步调。
 @Observable
+@MainActor
 final class LiteRTModelStore: ModelInstaller {
     private static let sourceProbeByteLimit = 128 * 1024
     private static let sourceProbeTimeout: TimeInterval = 6
@@ -26,7 +33,7 @@ final class LiteRTModelStore: ModelInstaller {
 
     // MARK: - Paths
 
-    private var modelsDirectory: URL {
+    nonisolated private var modelsDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         return docs.appendingPathComponent("models", isDirectory: true)
     }
@@ -41,18 +48,22 @@ final class LiteRTModelStore: ModelInstaller {
 
         refreshInstallStates()
 
-        // 监听模型加载失败（文件损坏）→ 立即刷新安装状态
+        // 监听模型加载失败（文件损坏）→ 立即刷新安装状态。
+        // queue: .main 保证 closure 在主线程执行, 用 assumeIsolated 把这个动态事实
+        // 桥接给 Swift 的静态隔离检查 (class 现在是 @MainActor)。
         NotificationCenter.default.addObserver(
             forName: Notification.Name("LiteRTModelCorrupt"),
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            if let modelID = notification.userInfo?["modelID"] as? String {
-                Task { [weak self] in
-                    try? await self?.downloadCoordinator().purge(assetID: modelID)
+            MainActor.assumeIsolated {
+                if let modelID = notification.userInfo?["modelID"] as? String {
+                    Task { [weak self] in
+                        try? await self?.downloadCoordinator().purge(assetID: modelID)
+                    }
                 }
+                self?.refreshInstallStates()
             }
-            self?.refreshInstallStates()
         }
     }
 
@@ -287,6 +298,13 @@ final class LiteRTModelStore: ModelInstaller {
         //   - isRequired=true companion 解压失败 → 整个 install 报错 (用户能 retry).
         //   - isRequired=false 失败 → 打 warn 日志, 继续 (backend 路径会 fallback).
         // 解压成功后删掉 .zip 释放磁盘 (~1 GB).
+        //
+        // ⚠️ MainActor 警告: performInstall 现在跑在 MainActor 上 (class @MainActor),
+        // 当前 PredefinedModels 全是 archive: nil 所以这个 loop 是空的; 一旦未来
+        // 再次引入 archive companion (例如重新启用 CoreML mlmodelc.zip ~1GB),
+        // ZipExtractor.extract 是同步阻塞调用, 必须包到 `await Task.detached
+        // (priority: .userInitiated) { ... }.value` 里执行, 否则会冻 UI 并触发
+        // watchdog (iOS 启动期 ~10s, 运行期 ~20s)。
         for companion in model.companionFiles {
             guard let archive = companion.archive,
                   let extractedName = companion.extractedDirectoryName else {
@@ -545,7 +563,6 @@ final class LiteRTModelStore: ModelInstaller {
         return formatter.string(fromByteCount: bytes)
     }
 
-    @MainActor
     fileprivate func applyDownloadProgress(_ snapshot: DownloadProgressSnapshot) {
         guard activeTasks[snapshot.assetID] != nil else { return }
 
@@ -645,7 +662,7 @@ final class LiteRTModelStore: ModelInstaller {
         return false
     }
 
-    func artifactPath(for model: ModelDescriptor) -> URL? {
+    nonisolated func artifactPath(for model: ModelDescriptor) -> URL? {
         for candidate in primaryArtifactCandidates(for: model) {
             guard completeFileExists(at: candidate, expectedSize: model.expectedFileSize) else {
                 continue
@@ -662,7 +679,7 @@ final class LiteRTModelStore: ModelInstaller {
         return nil
     }
 
-    private func primaryArtifactCandidates(for model: ModelDescriptor) -> [URL] {
+    nonisolated private func primaryArtifactCandidates(for model: ModelDescriptor) -> [URL] {
         var candidates: [URL] = []
 
         // 1. 优先检查 app bundle（打包进去的模型）
@@ -676,7 +693,7 @@ final class LiteRTModelStore: ModelInstaller {
         return candidates
     }
 
-    private func completeFileExists(at url: URL, expectedSize: Int64) -> Bool {
+    nonisolated private func completeFileExists(at url: URL, expectedSize: Int64) -> Bool {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             return false
@@ -695,7 +712,7 @@ final class LiteRTModelStore: ModelInstaller {
         return size >= expectedSize * 9 / 10
     }
 
-    private func requiredCompanionsAvailable(for model: ModelDescriptor, baseDirectory: URL) -> Bool {
+    nonisolated private func requiredCompanionsAvailable(for model: ModelDescriptor, baseDirectory: URL) -> Bool {
         model.companionFiles
             .filter(\.isRequired)
             .allSatisfy { companion in
@@ -704,7 +721,7 @@ final class LiteRTModelStore: ModelInstaller {
             }
     }
 
-    private func companionStorageCandidates(for companion: CompanionFile, baseDirectory: URL) -> [URL] {
+    nonisolated private func companionStorageCandidates(for companion: CompanionFile, baseDirectory: URL) -> [URL] {
         var candidates: [URL] = []
 
         candidates.append(baseDirectory.appendingPathComponent(companion.localResourceName))
@@ -766,7 +783,7 @@ final class LiteRTModelStore: ModelInstaller {
         }
     }
 
-    private func isUserModelPath(_ url: URL) -> Bool {
+    nonisolated private func isUserModelPath(_ url: URL) -> Bool {
         url.standardizedFileURL.path.hasPrefix(modelsDirectory.standardizedFileURL.path)
     }
 
@@ -781,15 +798,14 @@ final class LiteRTModelStore: ModelInstaller {
 
     private func refreshResumableState(for model: ModelDescriptor) async {
         guard artifactPath(for: model) == nil else {
-            await applyResumableState(nil, for: model)
+            applyResumableState(nil, for: model)
             return
         }
 
         let state = try? await downloadManifestStore().resumeState(for: model.id)
-        await applyResumableState(state, for: model)
+        applyResumableState(state, for: model)
     }
 
-    @MainActor
     private func applyResumableState(_ state: DownloadResumeState?, for model: ModelDescriptor) {
         guard let state else {
             resumableModelIDs.remove(model.id)

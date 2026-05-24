@@ -76,6 +76,8 @@
 		A31476FA2F85741500318978 /* ToolChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31476F42F85741500318978 /* ToolChain.swift */; };
 		A31476FB2F85741500318978 /* OutputCleaner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31476EF2F85741500318978 /* OutputCleaner.swift */; };
 		A31476FC2F85741500318978 /* ToolCallParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A31476F32F85741500318978 /* ToolCallParser.swift */; };
+		A1B2C3D4E5F607182930D001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930D002 /* PrivacyInfo.xcprivacy */; };
+		A1B2C3D4E5F607182930D003 /* OrbWebAssets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930D004 /* OrbWebAssets */; };
 		A340D947F4D1C7DE26F7F978 /* LiveMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094A760C8A6DFD5E317AF5B8 /* LiveMetrics.swift */; };
 		A784E79067D36E56702AC300 /* AudioUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22A3E6DE14D68AD9C9ABF0E8 /* AudioUI.swift */; };
 		AA1000000000000000000001 /* LLMEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000001 /* LLMEngine.swift */; };
@@ -145,6 +147,7 @@
 		BB2000000000000000000008 /* LiteRTCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000008 /* LiteRTCatalog.swift */; };
 		BB2000000000000000000009 /* LiteRTModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000009 /* LiteRTModelStore.swift */; };
 		BB2000000000000000000012 /* PCLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000012 /* PCLog.swift */; };
+		FEE200000000000000000001 /* TelemetryClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEE100000000000000000002 /* TelemetryClient.swift */; };
 		BB2000000000000000000099 /* AudioBypassTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000099 /* AudioBypassTest.swift */; };
 		BB2000000000000000000100 /* LanguageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000100 /* LanguageService.swift */; };
 		BB2000000000000000000101 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000101 /* L10n.swift */; };
@@ -291,6 +294,7 @@
 		BB1000000000000000000008 /* LiteRTCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiteRTCatalog.swift; sourceTree = "<group>"; };
 		BB1000000000000000000009 /* LiteRTModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiteRTModelStore.swift; sourceTree = "<group>"; };
 		BB1000000000000000000012 /* PCLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PCLog.swift; path = Shared/PCLog.swift; sourceTree = SOURCE_ROOT; };
+		FEE100000000000000000002 /* TelemetryClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TelemetryClient.swift; path = Shared/TelemetryClient.swift; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000099 /* AudioBypassTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBypassTest.swift; sourceTree = "<group>"; };
 		BB1000000000000000000100 /* LanguageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LanguageService.swift; path = Shared/LanguageService.swift; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000101 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = L10n.swift; path = Shared/L10n.swift; sourceTree = SOURCE_ROOT; };
@@ -331,6 +335,8 @@
 		8A4D5E6F7182940CD2345678 /* ImageFollowUp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageFollowUp.swift; sourceTree = "<group>"; };
 		9B5E6F708293A51DE3456789 /* PromptPipelineHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptPipelineHelpers.swift; sourceTree = "<group>"; };
 		AC6F708293B62EF01234BBBB /* ProcessInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessInput.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F607182930D002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F607182930D004 /* OrbWebAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OrbWebAssets; path = App/OrbWebAssets; sourceTree = SOURCE_ROOT; };
 		BD708293B62EF01234DDDDDD /* EngineLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineLifecycle.swift; sourceTree = "<group>"; };
 		E04567890ABCDEF012346666 /* PromptTokenEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTokenEstimator.swift; sourceTree = "<group>"; };
 		E18A47114A10132E25E220F8 /* AgentEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEngine.swift; sourceTree = "<group>"; };
@@ -384,6 +390,8 @@
 				D21E6B56B839A63857912FE0 /* PhoneClaw */,
 				D5E6F7081A2B3C4D5E6F7094 /* piz_compressed.exr */,
 				D5E6F7081A2B3C4D5E6F7096 /* studio_env.hdr */,
+				A1B2C3D4E5F607182930D004 /* OrbWebAssets */,
+				A1B2C3D4E5F607182930D002 /* PrivacyInfo.xcprivacy */,
 				AC5E0AA2711EA01E891DE3A7 /* Products */,
 				03C67BBB35FEB376174D7420 /* Pods */,
 				E1D6A9BAE368B2FB909A7774 /* Frameworks */,
@@ -605,6 +613,7 @@
 				9C503EC6B19AD0CF5515B98E /* LiveComponentTest.swift */,
 				094A760C8A6DFD5E317AF5B8 /* LiveMetrics.swift */,
 				BB1000000000000000000012 /* PCLog.swift */,
+				FEE100000000000000000002 /* TelemetryClient.swift */,
 				BB1000000000000000000100 /* LanguageService.swift */,
 				BB1000000000000000000101 /* L10n.swift */,
 				BB1000000000000000000102 /* PromptLocale.swift */,
@@ -785,6 +794,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				ICONASSETS0000000000002 /* Assets.xcassets in Resources */,
+				A1B2C3D4E5F607182930D001 /* PrivacyInfo.xcprivacy in Resources */,
+				A1B2C3D4E5F607182930D003 /* OrbWebAssets in Resources */,
 				B1A2C3D4E5F607182930B100 /* Library in Resources */,
 				B1A2C3D4E5F607182930B107 /* piz_compressed.exr in Resources */,
 				B1A2C3D4E5F607182930B108 /* studio_env.hdr in Resources */,
@@ -1038,6 +1049,7 @@
 				D0B100000000000000000006 /* DownloadObserver.swift in Sources */,
 				D0B100000000000000000007 /* ResumableAssetDownloader.swift in Sources */,
 				BB2000000000000000000012 /* PCLog.swift in Sources */,
+				FEE200000000000000000001 /* TelemetryClient.swift in Sources */,
 				BB2000000000000000000100 /* LanguageService.swift in Sources */,
 				BB2000000000000000000101 /* L10n.swift in Sources */,
 				BB2000000000000000000102 /* PromptLocale.swift in Sources */,

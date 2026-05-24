@@ -58,10 +58,7 @@ public final class ModelRuntimeCoordinator {
 
     // MARK: - Init
 
-    /// Nonisolated: only stores references — no MainActor-bound work happens here.
-    /// Required because Swift doesn't allow calling @MainActor init from another
-    /// @MainActor type's init without await (even though both are on MainActor).
-    nonisolated public init(inference: InferenceService, installer: ModelInstaller) {
+    public init(inference: InferenceService, installer: ModelInstaller) {
         self.inference = inference
         self.installer = installer
     }

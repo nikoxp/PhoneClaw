@@ -11,6 +11,7 @@ struct ConfigurationsView: View {
     @Environment(\.openURL) private var openURL
     @State private var selectedTab = 0  // 0=Model Settings, 1=System Prompt, 2=Permissions
     @State private var showSkillsManager = false
+    @State private var showPrivacyPolicy = false
 
     // 本地编辑状态（确认后才应用）
     @State private var selectedModelID = ModelDescriptor.defaultModel.id
@@ -69,6 +70,9 @@ struct ConfigurationsView: View {
         }
         .fullScreenCover(isPresented: $showSkillsManager) {
             SkillsManagerView(engine: engine)
+        }
+        .fullScreenCover(isPresented: $showPrivacyPolicy) {
+            PrivacyPolicyView()
         }
         #if canImport(UIKit)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
@@ -144,6 +148,15 @@ struct ConfigurationsView: View {
                     showSkillsManager = true
                 } label: {
                     Label(tr("技能", "Skills"), systemImage: "puzzlepiece.extension")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(SettingsStyle.secondary)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    showPrivacyPolicy = true
+                } label: {
+                    Label(tr("隐私", "Privacy"), systemImage: "hand.raised")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(SettingsStyle.secondary)
                 }
@@ -986,25 +999,7 @@ struct ConfigurationsView: View {
             HStack(spacing: 8) {
                 Button(isResumable ? tr("继续下载", "Resume") : tr("下载", "Download")) {
                     modelSelectionMessage = nil
-                    Task {
-                        do {
-                            try await engine.installer.install(model: model)
-                            await MainActor.run {
-                                engine.installer.refreshInstallStates()
-                                selectModelIfCurrentUnavailable(model)
-                            }
-                        } catch is CancellationError {
-                            await MainActor.run {
-                                engine.installer.refreshInstallStates()
-                                modelSelectionMessage = nil
-                            }
-                        } catch {
-                            await MainActor.run {
-                                engine.installer.refreshInstallStates()
-                                modelSelectionMessage = modelInstallFailureMessage(error)
-                            }
-                        }
-                    }
+                    installModelWithTelemetry(model)
                 }
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(SettingsStyle.ink)
@@ -1054,25 +1049,7 @@ struct ConfigurationsView: View {
             HStack(spacing: 8) {
                 Button(tr("重试", "Retry")) {
                     modelSelectionMessage = nil
-                    Task {
-                        do {
-                            try await engine.installer.install(model: model)
-                            await MainActor.run {
-                                engine.installer.refreshInstallStates()
-                                selectModelIfCurrentUnavailable(model)
-                            }
-                        } catch is CancellationError {
-                            await MainActor.run {
-                                engine.installer.refreshInstallStates()
-                                modelSelectionMessage = nil
-                            }
-                        } catch {
-                            await MainActor.run {
-                                engine.installer.refreshInstallStates()
-                                modelSelectionMessage = modelInstallFailureMessage(error)
-                            }
-                        }
-                    }
+                    installModelWithTelemetry(model)
                 }
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(SettingsStyle.ink)
@@ -1108,6 +1085,36 @@ struct ConfigurationsView: View {
 
     private func modelInstallFailureMessage(_: Error) -> String {
         tr("下载失败，请重试。", "Download failed. Please try again.")
+    }
+
+    private func installModelWithTelemetry(_ model: ModelDescriptor) {
+        Telemetry.recordModelInstall(modelID: model.id, outcome: .started)
+        Task {
+            do {
+                try await engine.installer.install(model: model)
+                Telemetry.recordModelInstall(modelID: model.id, outcome: .completed)
+                await MainActor.run {
+                    engine.installer.refreshInstallStates()
+                    selectModelIfCurrentUnavailable(model)
+                }
+            } catch is CancellationError {
+                Telemetry.recordModelInstall(modelID: model.id, outcome: .cancelled)
+                await MainActor.run {
+                    engine.installer.refreshInstallStates()
+                    modelSelectionMessage = nil
+                }
+            } catch {
+                Telemetry.recordModelInstall(
+                    modelID: model.id,
+                    outcome: .failed,
+                    failureReason: Telemetry.failureReason(for: error)
+                )
+                await MainActor.run {
+                    engine.installer.refreshInstallStates()
+                    modelSelectionMessage = modelInstallFailureMessage(error)
+                }
+            }
+        }
     }
 
     private func removeInstalledModel(_ model: ModelDescriptor) {
@@ -1343,6 +1350,126 @@ private extension ModelInstallState {
             return true
         }
         return false
+    }
+}
+
+private struct PrivacyPolicyView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    private var sections: [(title: String, body: String)] {
+        [
+            (
+                tr("本地优先", "Local-first"),
+                tr(
+                    "PhoneClaw 的聊天、图片理解、语音和工具执行默认在设备本地处理。聊天内容、图片和个人数据不会上传到 PhoneClaw 服务器。",
+                    "PhoneClaw processes chat, image understanding, voice, and tool execution locally by default. Chat content, images, and personal data are not uploaded to PhoneClaw servers."
+                )
+            ),
+            (
+                tr("权限", "Permissions"),
+                tr(
+                    "麦克风、摄像头、日历、提醒事项、通讯录和健康数据只会在你启用相关功能时访问。健康数据只读使用, 用于本地生成摘要和建议。",
+                    "Microphone, camera, calendar, reminders, contacts, and Health data are accessed only when you enable related features. Health data is read-only and used locally for summaries and insights."
+                )
+            ),
+            (
+                tr("模型下载", "Model Downloads"),
+                tr(
+                    "你选择下载模型时, App 会连接模型源获取模型文件。下载的是模型数据, 不是可执行代码。模型文件保存在本机。",
+                    "When you choose to download a model, the app connects to model sources to fetch model files. These downloads are model data, not executable code, and are stored on device."
+                )
+            ),
+            (
+                tr("跟踪", "Tracking"),
+                tr(
+                    "PhoneClaw 不使用 App Tracking Transparency 跟踪你, 不将数据用于跨 App 或网站追踪。",
+                    "PhoneClaw does not use App Tracking Transparency tracking and does not use your data to track you across apps or websites."
+                )
+            )
+        ]
+    }
+
+    var body: some View {
+        ZStack {
+            Theme.bg.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(SettingsStyle.controlFill)
+                                .frame(
+                                    width: UIScale.topStatusChipDiameter,
+                                    height: UIScale.topStatusChipDiameter
+                                )
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(SettingsStyle.secondary)
+                                .opacity(0.58)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    Text(tr("隐私", "Privacy"))
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(SettingsStyle.muted)
+
+                    Spacer()
+
+                    Color.clear
+                        .frame(
+                            width: UIScale.topStatusChipDiameter,
+                            height: UIScale.topStatusChipDiameter
+                        )
+                }
+                .padding(.horizontal, Theme.inputPadH)
+                .padding(.vertical, 10)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        Text(tr("隐私政策", "Privacy Policy"))
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(SettingsStyle.ink)
+                            .padding(.top, 30)
+
+                        Text(tr(
+                            "这份说明概述 PhoneClaw 如何在设备本地处理数据, 以及何时访问系统权限。",
+                            "This summary explains how PhoneClaw handles data locally on device and when it accesses system permissions."
+                        ))
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(SettingsStyle.secondary)
+                        .lineSpacing(5)
+
+                        ForEach(sections, id: \.title) { section in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(section.title)
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(SettingsStyle.ink)
+                                Text(section.body)
+                                    .font(.system(size: 15, weight: .regular))
+                                    .foregroundStyle(SettingsStyle.secondary)
+                                    .lineSpacing(5)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(18)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                SettingsStyle.controlFill,
+                                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 34)
+                    .padding(.bottom, 36)
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
     }
 }
 
