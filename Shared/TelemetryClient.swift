@@ -28,8 +28,8 @@ enum TelemetryModality: String, Sendable {
 }
 
 enum Telemetry {
-    static func startSession() {
-        Task { await TelemetryClient.shared.startSession() }
+    static func recordAppOpen() {
+        Task { await TelemetryClient.shared.recordAppOpen() }
     }
 
     static func endSession() {
@@ -91,6 +91,16 @@ enum Telemetry {
     }
 }
 
+private enum TelemetryAppInfo {
+    static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    }
+
+    static var buildNumber: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+    }
+}
+
 actor TelemetryClient {
     static let shared = TelemetryClient()
 
@@ -107,6 +117,8 @@ actor TelemetryClient {
     private let defaults: UserDefaults
     private var queue: [TelemetryQueuedEvent]
     private var isUploading = false
+    private var appSessionID: String?
+    private var lastAppOpenAt: Date?
     private var currentSessionID: String?
     private var currentSessionStartedAt: Date?
     private var turnCount = 0
@@ -119,9 +131,29 @@ actor TelemetryClient {
         self.queue = Self.loadQueue(defaults: defaults)
     }
 
-    func startSession() {
+    func recordAppOpen() {
         guard isReady else { return }
-        guard currentSessionID == nil else { return }
+
+        let now = Date()
+        if let lastAppOpenAt, now.timeIntervalSince(lastAppOpenAt) < 30 {
+            return
+        }
+
+        let sessionID = UUID().uuidString
+        appSessionID = sessionID
+        lastAppOpenAt = now
+
+        enqueue(
+            name: "app_open",
+            sessionID: sessionID,
+            properties: [
+                "install_cohort": .string(installCohort)
+            ]
+        )
+    }
+
+    private func startConversationSession() {
+        guard isReady, currentSessionID == nil else { return }
         currentSessionID = UUID().uuidString
         currentSessionStartedAt = Date()
         turnCount = 0
@@ -130,6 +162,7 @@ actor TelemetryClient {
 
         enqueue(
             name: "session_start",
+            sessionID: currentSessionID!,
             properties: [
                 "install_cohort": .string(installCohort)
             ]
@@ -140,6 +173,7 @@ actor TelemetryClient {
         guard isReady, currentSessionID != nil else { return }
         enqueue(
             name: "session_end",
+            sessionID: currentSessionID!,
             properties: [
                 "turn_count": .int(turnCount),
                 "had_second_turn": .bool(turnCount >= 2),
@@ -156,13 +190,14 @@ actor TelemetryClient {
 
     func recordMessageSent(modelID: String, modality: TelemetryModality) {
         guard isReady else { return }
-        ensureSession()
+        ensureConversationSession()
         turnCount += 1
 
         guard !didSendFirstMessage else { return }
         didSendFirstMessage = true
         enqueue(
             name: "first_message_sent",
+            sessionID: currentSessionID!,
             properties: [
                 "model_id": .string(modelID),
                 "modality": .string(modality.rawValue)
@@ -187,7 +222,8 @@ actor TelemetryClient {
         if let failureReason, !failureReason.isEmpty {
             properties["failure_reason"] = .string(Self.safeString(failureReason))
         }
-        enqueue(name: "first_response_received", properties: properties)
+        guard let sessionID = currentSessionID else { return }
+        enqueue(name: "first_response_received", sessionID: sessionID, properties: properties)
     }
 
     func recordModelInstall(
@@ -196,7 +232,7 @@ actor TelemetryClient {
         failureReason: String?
     ) {
         guard isReady else { return }
-        ensureSession()
+        let sessionID = eventSessionID()
 
         if outcome == .started {
             installStartedAt[modelID] = Date()
@@ -209,7 +245,7 @@ actor TelemetryClient {
         if let failureReason, !failureReason.isEmpty {
             properties["failure_reason"] = .string(Self.safeString(failureReason))
         }
-        enqueue(name: "model_install", properties: properties)
+        enqueue(name: "model_install", sessionID: sessionID, properties: properties)
     }
 
     func flush() {
@@ -288,19 +324,34 @@ actor TelemetryClient {
         return value
     }
 
-    private func ensureSession() {
+    private func ensureConversationSession() {
         if currentSessionID == nil {
-            startSession()
+            startConversationSession()
         }
     }
 
-    private func enqueue(name: String, properties: [String: TelemetryValue]) {
-        guard let sessionID = currentSessionID else { return }
+    private func eventSessionID() -> String {
+        if let currentSessionID {
+            return currentSessionID
+        }
+        if let appSessionID {
+            return appSessionID
+        }
+        let sessionID = UUID().uuidString
+        appSessionID = sessionID
+        return sessionID
+    }
+
+    private func enqueue(name: String, sessionID: String, properties: [String: TelemetryValue]) {
+        let appVersion = TelemetryAppInfo.appVersion
+        let buildNumber = TelemetryAppInfo.buildNumber
         let event = TelemetryQueuedEvent(
             eventID: UUID().uuidString,
             name: name,
             clientTimestamp: Self.isoTimestamp(from: Date()),
             sessionID: sessionID,
+            appVersion: appVersion,
+            buildNumber: buildNumber,
             properties: properties
         )
         queue.append(event)
@@ -322,18 +373,20 @@ actor TelemetryClient {
         isUploading = true
         defer { isUploading = false }
 
-        let batch = Array(queue.prefix(Self.maxBatchSize))
+        let batch = uploadBatch()
+        guard let firstEvent = batch.first else { return }
         let payload = TelemetryPayload(
             appID: "phoneclaw-ios",
             userID: userID,
             installID: installID,
             sessionID: currentSessionID ?? batch.first?.sessionID ?? UUID().uuidString,
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
-            build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
+            appVersion: firstEvent.appVersion,
+            build: firstEvent.buildNumber,
+            buildNumber: firstEvent.buildNumber,
             deviceModel: Self.deviceModelIdentifier(),
             osVersion: Self.systemVersionString(),
             locale: Locale.current.identifier,
-            schemaVersion: 1,
+            schemaVersion: 2,
             events: batch.map {
                 TelemetryPayload.Event(
                     eventID: $0.eventID,
@@ -366,6 +419,23 @@ actor TelemetryClient {
         } catch {
             return
         }
+    }
+
+    private func uploadBatch() -> [TelemetryQueuedEvent] {
+        guard let first = queue.first else { return [] }
+        var batch: [TelemetryQueuedEvent] = []
+
+        for event in queue {
+            guard event.appVersion == first.appVersion,
+                  event.buildNumber == first.buildNumber else {
+                break
+            }
+            batch.append(event)
+            if batch.count >= Self.maxBatchSize {
+                break
+            }
+        }
+        return batch
     }
 
     private func persistQueue() {
@@ -464,7 +534,48 @@ private struct TelemetryQueuedEvent: Codable, Sendable {
     let name: String
     let clientTimestamp: String
     let sessionID: String
+    let appVersion: String
+    let buildNumber: String
     let properties: [String: TelemetryValue]
+
+    enum CodingKeys: String, CodingKey {
+        case eventID
+        case name
+        case clientTimestamp
+        case sessionID
+        case appVersion
+        case buildNumber
+        case properties
+    }
+
+    init(
+        eventID: String,
+        name: String,
+        clientTimestamp: String,
+        sessionID: String,
+        appVersion: String,
+        buildNumber: String,
+        properties: [String: TelemetryValue]
+    ) {
+        self.eventID = eventID
+        self.name = name
+        self.clientTimestamp = clientTimestamp
+        self.sessionID = sessionID
+        self.appVersion = appVersion
+        self.buildNumber = buildNumber
+        self.properties = properties
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        eventID = try container.decode(String.self, forKey: .eventID)
+        name = try container.decode(String.self, forKey: .name)
+        clientTimestamp = try container.decode(String.self, forKey: .clientTimestamp)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        appVersion = try container.decodeIfPresent(String.self, forKey: .appVersion) ?? TelemetryAppInfo.appVersion
+        buildNumber = try container.decodeIfPresent(String.self, forKey: .buildNumber) ?? TelemetryAppInfo.buildNumber
+        properties = try container.decode([String: TelemetryValue].self, forKey: .properties)
+    }
 }
 
 private struct TelemetryPayload: Encodable, Sendable {
@@ -474,6 +585,7 @@ private struct TelemetryPayload: Encodable, Sendable {
     let sessionID: String
     let appVersion: String
     let build: String
+    let buildNumber: String
     let deviceModel: String
     let osVersion: String
     let locale: String
@@ -487,6 +599,7 @@ private struct TelemetryPayload: Encodable, Sendable {
         case sessionID = "session_id"
         case appVersion = "app_version"
         case build
+        case buildNumber = "build_number"
         case deviceModel = "device_model"
         case osVersion = "os_version"
         case locale
