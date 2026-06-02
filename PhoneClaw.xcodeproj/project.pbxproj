@@ -147,7 +147,6 @@
 		BB2000000000000000000008 /* LiteRTCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000008 /* LiteRTCatalog.swift */; };
 		BB2000000000000000000009 /* LiteRTModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000009 /* LiteRTModelStore.swift */; };
 		BB2000000000000000000012 /* PCLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000012 /* PCLog.swift */; };
-		FEE200000000000000000001 /* TelemetryClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEE100000000000000000002 /* TelemetryClient.swift */; };
 		BB2000000000000000000099 /* AudioBypassTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000099 /* AudioBypassTest.swift */; };
 		BB2000000000000000000100 /* LanguageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000100 /* LanguageService.swift */; };
 		BB2000000000000000000101 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1000000000000000000101 /* L10n.swift */; };
@@ -184,6 +183,7 @@
 		D3A1B2C3D4E5F60718290009 /* Reminders.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A1B2C3D4E5F60718290109 /* Reminders.swift */; };
 		D3A1B2C3D4E5F60718290010 /* Contacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A1B2C3D4E5F60718290110 /* Contacts.swift */; };
 		D3A1B2C3D4E5F60718290011 /* Health.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A1B2C3D4E5F60718290111 /* Health.swift */; };
+		D3A1B2C3D4E5F60718290012 /* Web.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A1B2C3D4E5F60718290112 /* Web.swift */; };
 		D56B8094D6B249DC038FAF8F /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06A8F86444AB26C7373919B /* TTSService.swift */; };
 		D69250E717959D2D59D57ABD /* (null) in Sources */ = {isa = PBXBuildFile; };
 		D7B5B8D3378DF49369C7F306 /* (null) in Sources */ = {isa = PBXBuildFile; };
@@ -294,7 +294,6 @@
 		BB1000000000000000000008 /* LiteRTCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiteRTCatalog.swift; sourceTree = "<group>"; };
 		BB1000000000000000000009 /* LiteRTModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiteRTModelStore.swift; sourceTree = "<group>"; };
 		BB1000000000000000000012 /* PCLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PCLog.swift; path = Shared/PCLog.swift; sourceTree = SOURCE_ROOT; };
-		FEE100000000000000000002 /* TelemetryClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TelemetryClient.swift; path = Shared/TelemetryClient.swift; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000099 /* AudioBypassTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBypassTest.swift; sourceTree = "<group>"; };
 		BB1000000000000000000100 /* LanguageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LanguageService.swift; path = Shared/LanguageService.swift; sourceTree = SOURCE_ROOT; };
 		BB1000000000000000000101 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = L10n.swift; path = Shared/L10n.swift; sourceTree = SOURCE_ROOT; };
@@ -324,6 +323,7 @@
 		D3A1B2C3D4E5F60718290109 /* Reminders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Reminders.swift; sourceTree = "<group>"; };
 		D3A1B2C3D4E5F60718290110 /* Contacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Contacts.swift; sourceTree = "<group>"; };
 		D3A1B2C3D4E5F60718290111 /* Health.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Health.swift; sourceTree = "<group>"; };
+		D3A1B2C3D4E5F60718290112 /* Web.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Web.swift; sourceTree = "<group>"; };
 		D5E6F7081A2B3C4D5E6F7094 /* piz_compressed.exr */ = {isa = PBXFileReference; lastKnownFileType = file; name = piz_compressed.exr; path = App/piz_compressed.exr; sourceTree = SOURCE_ROOT; };
 		D5E6F7081A2B3C4D5E6F7096 /* studio_env.hdr */ = {isa = PBXFileReference; lastKnownFileType = text; name = studio_env.hdr; path = App/studio_env.hdr; sourceTree = SOURCE_ROOT; };
 		DAF684F9A04FAEE76440F69C /* OrbAudioAnalyser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OrbAudioAnalyser.swift; path = Live/Audio/OrbAudioAnalyser.swift; sourceTree = SOURCE_ROOT; };
@@ -613,7 +613,6 @@
 				9C503EC6B19AD0CF5515B98E /* LiveComponentTest.swift */,
 				094A760C8A6DFD5E317AF5B8 /* LiveMetrics.swift */,
 				BB1000000000000000000012 /* PCLog.swift */,
-				FEE100000000000000000002 /* TelemetryClient.swift */,
 				BB1000000000000000000100 /* LanguageService.swift */,
 				BB1000000000000000000101 /* L10n.swift */,
 				BB1000000000000000000102 /* PromptLocale.swift */,
@@ -668,6 +667,7 @@
 				D3A1B2C3D4E5F60718290109 /* Reminders.swift */,
 				D3A1B2C3D4E5F60718290110 /* Contacts.swift */,
 				D3A1B2C3D4E5F60718290111 /* Health.swift */,
+				D3A1B2C3D4E5F60718290112 /* Web.swift */,
 			);
 			path = Handlers;
 			sourceTree = "<group>";
@@ -1022,6 +1022,7 @@
 				D3A1B2C3D4E5F60718290009 /* Reminders.swift in Sources */,
 				D3A1B2C3D4E5F60718290010 /* Contacts.swift in Sources */,
 				D3A1B2C3D4E5F60718290011 /* Health.swift in Sources */,
+				D3A1B2C3D4E5F60718290012 /* Web.swift in Sources */,
 				BB2000000000000000000001 /* LLMTypes.swift in Sources */,
 				BB2000000000000000000002 /* InferenceService.swift in Sources */,
 				BB2000000000000000000003 /* ModelCatalogProtocol.swift in Sources */,
@@ -1049,7 +1050,6 @@
 				D0B100000000000000000006 /* DownloadObserver.swift in Sources */,
 				D0B100000000000000000007 /* ResumableAssetDownloader.swift in Sources */,
 				BB2000000000000000000012 /* PCLog.swift in Sources */,
-				FEE200000000000000000001 /* TelemetryClient.swift in Sources */,
 				BB2000000000000000000100 /* LanguageService.swift in Sources */,
 				BB2000000000000000000101 /* L10n.swift in Sources */,
 				BB2000000000000000000102 /* PromptLocale.swift in Sources */,
@@ -1201,7 +1201,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = PhoneClaw.entitlements;
 				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 34;
 				DEVELOPMENT_TEAM = 2K4BDCCL73;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				HEADER_SEARCH_PATHS = (
@@ -1240,7 +1240,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = PhoneClaw.entitlements;
 				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 34;
 				DEVELOPMENT_TEAM = 2K4BDCCL73;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				HEADER_SEARCH_PATHS = (

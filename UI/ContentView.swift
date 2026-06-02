@@ -64,6 +64,7 @@ private struct StarterAction: Identifiable {
 
 private struct ScrollSignal: Equatable {
     let lastMessageID: UUID?
+    let lastMessageRole: String?
     let messageCount: Int
     let lastMessageContentCount: Int
     let isProcessing: Bool
@@ -85,6 +86,7 @@ struct ContentView: View {
     /// 记录每个 THINK 卡片的展开状态（key = ResponseBlock.id）
     @State private var expandedThoughts: Set<UUID> = []
     @State private var keyboardScrollTask: Task<Void, Never>?
+    @State private var shouldAutoFollowChat = true
     @FocusState private var isInputFocused: Bool
 
     // MARK: - Voice Input Mode
@@ -122,8 +124,9 @@ struct ContentView: View {
         let lastMessage = engine.messages.last
         return ScrollSignal(
             lastMessageID: lastMessage?.id,
+            lastMessageRole: lastMessage?.role.rawValue,
             messageCount: engine.messages.count,
-            lastMessageContentCount: lastMessage?.content.count ?? 0,
+            lastMessageContentCount: shouldAutoFollowChat ? (lastMessage?.content.count ?? 0) : 0,
             isProcessing: engine.isProcessing
         )
     }
@@ -194,6 +197,16 @@ struct ContentView: View {
                 opensPhotoPicker: false
             ),
             StarterAction(
+                id: "web-search",
+                title: tr("联网搜索", "Web search"),
+                prompt: tr(
+                    "联网搜索今天的 AI 新闻",
+                    "Search the web: latest artificial intelligence news"
+                ),
+                symbolName: "magnifyingglass",
+                opensPhotoPicker: false
+            ),
+            StarterAction(
                 id: "analyze-image",
                 title: tr("分析图片", "Analyze image"),
                 prompt: tr(
@@ -245,7 +258,6 @@ struct ContentView: View {
         .task {
             guard !ProcessInfo.processInfo.isRunningXCTest else { return }
             engine.setup()
-            Telemetry.recordAppOpen()
             // 不在这里 initialize hold-to-talk ASR. 改为用户第一次按住说话时
             // 通过 ASRService.ensureInitialized 懒加载, 避免 cold start 就占用 ASR 内存 (zh ~160MB / en ~180MB).
         }
@@ -255,14 +267,11 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 audioCapture.refreshPermissionStatus()
-                Telemetry.recordAppOpen()
                 return
             }
             engine.flushPendingSessionSave()
             engine.cancelActiveGeneration()
             _ = audioCapture.stopCapture()
-            Telemetry.endSession()
-            Telemetry.flush()
         }
         .onChange(of: engine.messages.isEmpty) { wasEmpty, isEmpty in
             // 新会话: 卸载 hold-to-talk ASR 以释放内存 (zh ~160MB / en ~180MB). 下次按住说话会 lazy 重新加载.
@@ -270,7 +279,6 @@ struct ContentView: View {
             // 保证我们只响应 "有消息 -> 清空" 这个方向, 忽略新开一条消息的方向.
             if isEmpty && !wasEmpty {
                 print("[UI] New session detected → unloading ASR")
-                Telemetry.endSession()
                 holdASRWarmupTask?.cancel()
                 holdASRWarmupTask = nil
                 holdToTalkASR.unload()
@@ -407,7 +415,7 @@ struct ContentView: View {
     private var chatList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: Theme.chatSpacing) {
+                LazyVStack(spacing: Theme.chatSpacing) {
                     ForEach(displayItems) { item in
                         switch item {
                         case .user(let msg):
@@ -429,7 +437,6 @@ struct ContentView: View {
                             )
                         }
                     }
-
                 }
                 .padding(.horizontal, Theme.chatPadH)
                 .padding(.vertical, 20)
@@ -445,11 +452,16 @@ struct ContentView: View {
                     #endif
                 }
             )
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 8).onChanged { _ in
+                    shouldAutoFollowChat = false
+                }
+            )
             .task(id: scrollSignal) {
                 let signal = scrollSignal
                 await Task.yield()
                 guard !Task.isCancelled else { return }
-                scrollTo(proxy, animated: !signal.isProcessing)
+                handleScrollSignal(signal, proxy: proxy)
             }
             .onChange(of: isInputFocused) { _, focused in
                 guard focused else { return }
@@ -471,8 +483,21 @@ struct ContentView: View {
         }
     }
 
+    @MainActor
+    private func handleScrollSignal(_ signal: ScrollSignal, proxy: ScrollViewProxy) {
+        if signal.lastMessageRole == ChatMessage.Role.user.rawValue {
+            shouldAutoFollowChat = true
+            scrollTo(proxy, animated: true, duration: 0.18)
+            return
+        }
+
+        guard shouldAutoFollowChat else { return }
+        scrollTo(proxy, animated: !signal.isProcessing)
+    }
+
     private func followKeyboardScroll(_ proxy: ScrollViewProxy, duration: Double) {
         keyboardScrollTask?.cancel()
+        shouldAutoFollowChat = true
         keyboardScrollTask = Task { @MainActor in
             await Task.yield()
             guard !Task.isCancelled else { return }

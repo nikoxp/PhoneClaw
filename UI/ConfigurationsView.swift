@@ -1062,7 +1062,7 @@ struct ConfigurationsView: View {
             HStack(spacing: 8) {
                 Button(modelDownloadButtonTitle(for: model, isResumable: isResumable)) {
                     modelSelectionMessage = nil
-                    installModelWithTelemetry(model)
+                    installModel(model)
                 }
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(SettingsStyle.ink)
@@ -1112,7 +1112,7 @@ struct ConfigurationsView: View {
             HStack(spacing: 8) {
                 Button(tr("重试", "Retry")) {
                     modelSelectionMessage = nil
-                    installModelWithTelemetry(model)
+                    installModel(model)
                 }
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(SettingsStyle.ink)
@@ -1150,28 +1150,20 @@ struct ConfigurationsView: View {
         tr("下载失败，请重试。", "Download failed. Please try again.")
     }
 
-    private func installModelWithTelemetry(_ model: ModelDescriptor) {
-        Telemetry.recordModelInstall(modelID: model.id, outcome: .started)
+    private func installModel(_ model: ModelDescriptor) {
         Task {
             do {
                 try await engine.installer.install(model: model)
-                Telemetry.recordModelInstall(modelID: model.id, outcome: .completed)
                 await MainActor.run {
                     engine.installer.refreshInstallStates()
                     selectModelIfCurrentUnavailable(model)
                 }
             } catch is CancellationError {
-                Telemetry.recordModelInstall(modelID: model.id, outcome: .cancelled)
                 await MainActor.run {
                     engine.installer.refreshInstallStates()
                     modelSelectionMessage = nil
                 }
             } catch {
-                Telemetry.recordModelInstall(
-                    modelID: model.id,
-                    outcome: .failed,
-                    failureReason: Telemetry.failureReason(for: error)
-                )
                 await MainActor.run {
                     engine.installer.refreshInstallStates()
                     modelSelectionMessage = modelInstallFailureMessage(error)
@@ -1265,7 +1257,9 @@ struct ConfigurationsView: View {
         case .camera:
             return tr("摄像头", "Camera")
         case .calendar:
-            return tr("日历", "Calendar")
+            return tr("日历写入", "Calendar Write")
+        case .calendarRead:
+            return tr("日历读取", "Calendar Read")
         case .reminders:
             return tr("提醒事项", "Reminders")
         case .contacts:
@@ -1281,6 +1275,8 @@ struct ConfigurationsView: View {
             return tr("允许在 Live 模式中观察周围环境", "Allow camera access for Live mode visual grounding")
         case .calendar:
             return tr("允许创建和写入日历事项", "Allow creating and writing calendar events")
+        case .calendarRead:
+            return tr("允许读取日程用于本地分析", "Allow reading calendar events for local analysis")
         case .reminders:
             return tr("允许创建提醒和待办", "Allow creating reminders and tasks")
         case .contacts:
@@ -1709,7 +1705,9 @@ private enum SettingsInfoTopic: Identifiable {
         case .camera:
             return tr("摄像头", "Camera")
         case .calendar:
-            return tr("日历", "Calendar")
+            return tr("日历写入", "Calendar Write")
+        case .calendarRead:
+            return tr("日历读取", "Calendar Read")
         case .reminders:
             return tr("提醒事项", "Reminders")
         case .contacts:
@@ -1725,6 +1723,8 @@ private enum SettingsInfoTopic: Identifiable {
             return tr("用于 Live 模式观察周围环境。", "Used by Live mode to observe the surroundings.")
         case .calendar:
             return tr("用于创建和写入日历事项。", "Used to create and write calendar events.")
+        case .calendarRead:
+            return tr("用于读取指定时间范围的日程，并在本地做时间安排分析。", "Used to read calendar events in a chosen time range for local schedule analysis.")
         case .reminders:
             return tr("用于创建提醒和待办。", "Used to create reminders and tasks.")
         case .contacts:

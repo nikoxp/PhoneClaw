@@ -41,14 +41,8 @@ extension AgentEngine {
         }
         guard !isProcessing else { return }
         guard !normalizedText.isEmpty || !promptAttachments.isEmpty || audioInput != nil else { return }
-        Telemetry.recordMessageSent(
-            modelID: catalog.selectedModel.id,
-            modality: .from(
-                hasImages: !displayAttachments.isEmpty || !promptAttachments.isEmpty,
-                hasAudio: audioInput != nil
-            )
-        )
         isProcessing = true
+        lastTurnRawModelOutputs.removeAll()
         beginGenerationTracking()
 
         let currentUserMessage = ChatMessage(
@@ -147,14 +141,14 @@ extension AgentEngine {
         // Tag 这条 assistant placeholder 的 skillName, 让 sticky routing 在
         // 下一轮追问时能识别上下文 (即使本轮 LLM 没调 tool 只是澄清).
         //
-        // 只对 type: device 的 skill 打 tag — content skill (如 translate)
+        // 只对 type: device / network 的 skill 打 tag — content skill (如 translate)
         // 是一问一答的纯变换, 它的 assistant reply 代表"已完成", 不应该让
-        // 下一轮闲聊被 sticky 粘回去翻译。框架在这里按 skill metadata 决定,
-        // 不硬编具体 skill 名, 也不感知模型。
+        // 下一轮闲聊被 sticky 粘回去翻译。联网搜索可能有"打开第一条/再查它"这种
+        // 追问, 需要保持上下文。框架在这里按 skill metadata 决定, 不硬编具体 skill 名。
         let stickyEligibleSkillID: String? = {
             guard let id = matchedSkillIdsForTurn.first,
                   let def = skillRegistry.getDefinition(id) else { return nil }
-            return def.metadata.type == .device ? id : nil
+            return (def.metadata.type == .device || def.metadata.type == .network) ? id : nil
         }()
 
         if requiresMultimodal {
@@ -203,6 +197,7 @@ extension AgentEngine {
                 }
                 switch result {
                 case .success(let fullText):
+                    self.lastTurnRawModelOutputs.append(fullText)
                     #if DEBUG
                     log("[Agent] 1st raw: \(fullText.prefix(300))")
                     #endif
@@ -489,6 +484,7 @@ extension AgentEngine {
                 }
                 switch result {
                 case .success(let fullText):
+                    self.lastTurnRawModelOutputs.append(fullText)
                     #if DEBUG
                     log("[Agent] 1st raw: \(fullText.prefix(300))")
                     #endif
@@ -565,6 +561,7 @@ extension AgentEngine {
                 onComplete: { result in
                     switch result {
                     case .success(let text):
+                        self.lastTurnRawModelOutputs.append(text)
                         log("[Agent] LLM raw: \(text.prefix(300))")
                         continuation.resume(returning: text)
                     case .failure(let error):
@@ -616,6 +613,7 @@ extension AgentEngine {
                 }
                 switch result {
                 case .success(let text):
+                    self.lastTurnRawModelOutputs.append(text)
                     log("[Agent] LLM raw: \(text.prefix(300))")
                     continuation.resume(returning: text)
                 case .failure(let error):
@@ -668,8 +666,6 @@ extension AgentEngine {
     ///   it's terminated as cancelled regardless of this parameter.
     func finishTurn(error: String? = nil, userCancelled: Bool = false) {
         let txn = coordinator.currentTransaction
-        let shouldRecordTelemetry = !(txn?.isTerminal ?? true)
-        let wasCancelled = userCancelled || txn?.state == .cancelling
         if let txn, !txn.isTerminal {
             if userCancelled || txn.state == .cancelling {
                 // Cancel flow in progress — mark terminated so coordinator's
@@ -688,14 +684,6 @@ extension AgentEngine {
                 txn.commit()
                 coordinator.completeGeneration()
             }
-        }
-        if shouldRecordTelemetry && !wasCancelled {
-            Telemetry.recordFirstResponseReceived(
-                modelID: catalog.selectedModel.id,
-                ttftMs: inference.stats.ttftMs,
-                success: error == nil,
-                failureReason: error == nil ? nil : "generation_error"
-            )
         }
         isProcessing = false
     }
