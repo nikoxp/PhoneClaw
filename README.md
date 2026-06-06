@@ -29,14 +29,20 @@ PhoneClaw 是一个运行在 iPhone 上的本地私人 Agent。内置 Gemma 4 �
 
 ## 最新更新
 
-**2026-06-01**
+**2026-06-05**
+
+- PhoneClaw 已开放 TestFlight 测试：[加入 TestFlight](https://testflight.apple.com/join/YuUSwq78)
+- 重构整体 Agent 框架：优化 Skill 结果语义、技能路由、工具调用链、上下文续问和多步骤任务处理，让模型更稳定地判断该直接回答、调用工具，还是延续上一轮结果，减少误触发工具、重复调用和追问跑偏
+- 新增健康范围报告：支持按时间段汇总步数、距离、活动能量、心率、睡眠、运动、体重和心率变异性，并在本地生成健康摘要、趋势和关键指标说明
+
+<details>
+<summary>历史更新</summary>
+
+### 2026-06-01
 
 - PhoneClaw 已开放 TestFlight 测试：[加入 TestFlight](https://testflight.apple.com/join/YuUSwq78)
 - 新增日历读取：可查询今天、明天、本周和未来 7 天日程，支持忙闲和空闲时间分析
 - 优化联网搜索和长回复浏览：获取实时信息后可整理回答，模型输出时也能正常上下查看历史
-
-<details>
-<summary>历史更新</summary>
 
 ### 2026-05-17
 

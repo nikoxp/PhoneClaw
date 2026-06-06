@@ -655,18 +655,18 @@ struct ConfigurationsView: View {
 
     // MARK: - Language
 
-    /// Language preference picker — Auto (跟随系统) / 中文 / English。
+    /// Language preference picker — Auto (跟随系统) / 中文 / English / 日本語。
     /// 读写 `LanguageService.shared.selected`, 绑定是直接的 Binding 封装
     /// (比 @Bindable + @Observable 的混搭更显式, 也不需要额外 @State 镜像)。
     /// 切换立即触发 SwiftUI observation, 整个 app 视图重渲染新语言。
     private var languageSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            sectionLabel(tr("语言", "Language"))
+            sectionLabel(tr("语言", "Language", "言語"))
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(tr("界面语言", "Interface Language"))
+                        Text(tr("界面语言", "Interface Language", "表示言語"))
                             .font(.system(size: 16, weight: .regular))
                             .foregroundStyle(SettingsStyle.ink)
 
@@ -728,23 +728,28 @@ struct ConfigurationsView: View {
         case .auto:
             return tr(
                 "跟随系统 · 当前为 \(localizedLanguageName(resolved))",
-                "Follows system · Currently \(localizedLanguageName(resolved))"
+                "Follows system · Currently \(localizedLanguageName(resolved))",
+                "システムに従う · 現在は \(localizedLanguageName(resolved))"
             )
         case .zhHans:
-            return tr("已选择中文", "Chinese selected")
+            return tr("已选择中文", "Chinese selected", "中国語を選択中")
         case .en:
-            return tr("已选择英文", "English selected")
+            return tr("已选择英文", "English selected", "英語を選択中")
+        case .ja:
+            return tr("已选择日语", "Japanese selected", "日本語を選択中")
         }
     }
 
     private func localizedLanguageName(_ language: AppLanguage) -> String {
         switch language {
         case .auto:
-            return tr("自动", "Auto")
+            return tr("自动", "Auto", "自動")
         case .zhHans:
-            return tr("中文", "Chinese")
+            return tr("中文", "Chinese", "中国語")
         case .en:
-            return tr("英文", "English")
+            return tr("英文", "English", "英語")
+        case .ja:
+            return tr("日语", "Japanese", "日本語")
         }
     }
 
@@ -752,10 +757,6 @@ struct ConfigurationsView: View {
 
     private var liveModelSection: some View {
         let state = liveDownloader.installState
-        let isDownloading: Bool = {
-            if case .downloading = state { return true }
-            return false
-        }()
 
         return VStack(alignment: .leading, spacing: 16) {
             labelWithInfo(tr("语音", "Voice"), topic: .liveVoice)
@@ -774,9 +775,7 @@ struct ConfigurationsView: View {
 
                 Spacer()
 
-                if !isDownloading {
-                    liveModelStateButton
-                }
+                liveModelStateButton
             }
             .padding(.vertical, 4)
 
@@ -813,7 +812,14 @@ struct ConfigurationsView: View {
         case .checkingSource:
             modelBadge(tr("检查中", "Checking"))
         case .downloading:
-            EmptyView()
+            Button(tr("取消", "Cancel")) {
+                liveDownloader.cancelDownload()
+            }
+            .font(.system(size: 12, weight: .regular))
+            .foregroundStyle(SettingsStyle.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         case .downloaded:
             Button(tr("移除", "Remove")) {
                 Task { try? await liveDownloader.removeAll() }
@@ -855,6 +861,9 @@ struct ConfigurationsView: View {
         case .checkingSource:
             return tr("检查中", "Checking")
         case .downloading:
+            if let metrics = liveDownloader.downloadMetrics {
+                return tr("下载中 · \(liveDownloadMetricsText(metrics))", "Downloading · \(liveDownloadMetricsText(metrics))")
+            }
             return tr("下载中", "Downloading")
         case .downloaded:
             return tr("已下载", "Downloaded")
@@ -878,47 +887,20 @@ struct ConfigurationsView: View {
         } else {
             byteFraction = nil
         }
-        let combinedFraction = byteFraction ?? fileFraction
-        let value = min(Double(safeTotal), max(0, combinedFraction) * Double(safeTotal))
+        let overallFraction = byteFraction ?? fileFraction
 
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(tr(
-                        "文件 \(completedFiles)/\(totalFiles)",
-                        "Files \(completedFiles)/\(totalFiles)"
-                    ))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(SettingsStyle.ink)
-                    .lineLimit(1)
+        return VStack(alignment: .leading, spacing: 5) {
+            SettingsDownloadProgressBar(fraction: overallFraction)
 
-                    if let metrics {
-                        Text(liveDownloadMetricsText(metrics))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(SettingsStyle.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                Button(tr("取消", "Cancel")) {
-                    liveDownloader.cancelDownload()
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(SettingsStyle.ink)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(SettingsStyle.selectedFill, in: Capsule())
-                .fixedSize(horizontal: true, vertical: true)
-            }
-
-            ProgressView(value: value, total: Double(safeTotal))
-                .progressViewStyle(.linear)
+            Text(tr(
+                "文件 \(completedFiles)/\(totalFiles)",
+                "Files \(completedFiles)/\(totalFiles)"
+            ))
+            .font(.system(size: 11, weight: .regular))
+            .foregroundStyle(SettingsStyle.tertiary)
+            .lineLimit(1)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(SettingsStyle.controlFill, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.top, 2)
     }
 
     private func liveDownloadMetricsText(_ metrics: ModelDownloadMetrics) -> String {
@@ -1191,21 +1173,11 @@ struct ConfigurationsView: View {
     ) -> some View {
         let safeTotal = max(totalFiles, 1)
         let metrics = engine.installer.downloadProgress[modelID]
-        let activeFileFraction = metrics?.fractionCompleted.map { min(1, max(0, $0)) } ?? 0
-        let value = min(Double(safeTotal), Double(min(completedFiles, safeTotal)) + activeFileFraction)
+        let fileFraction = Double(min(completedFiles, safeTotal)) / Double(safeTotal)
+        let overallFraction = metrics?.fractionCompleted.map { min(1, max(0, $0)) } ?? fileFraction
 
         return VStack(alignment: .leading, spacing: 5) {
-            GeometryReader { proxy in
-                let fraction = min(1, max(0, value / Double(safeTotal)))
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(SettingsStyle.hairline)
-                    Capsule()
-                        .fill(Theme.accentMuted.opacity(0.92))
-                        .frame(width: max(3, proxy.size.width * fraction))
-                }
-            }
-            .frame(height: 3)
+            SettingsDownloadProgressBar(fraction: overallFraction)
 
             Text(tr(
                 "文件 \(completedFiles)/\(totalFiles)",
@@ -1264,6 +1236,8 @@ struct ConfigurationsView: View {
             return tr("提醒事项", "Reminders")
         case .contacts:
             return tr("通讯录", "Contacts")
+        case .health:
+            return tr("健康数据", "Health Data")
         }
     }
 
@@ -1281,6 +1255,8 @@ struct ConfigurationsView: View {
             return tr("允许创建提醒和待办", "Allow creating reminders and tasks")
         case .contacts:
             return tr("允许保存和更新联系人", "Allow saving and updating contacts")
+        case .health:
+            return tr("允许读取步数、心率、睡眠、体重等健康数据", "Allow reading steps, heart rate, sleep, weight, and other Health data")
         }
     }
 
@@ -1712,6 +1688,8 @@ private enum SettingsInfoTopic: Identifiable {
             return tr("提醒事项", "Reminders")
         case .contacts:
             return tr("通讯录", "Contacts")
+        case .health:
+            return tr("健康数据", "Health Data")
         }
     }
 
@@ -1729,6 +1707,8 @@ private enum SettingsInfoTopic: Identifiable {
             return tr("用于创建提醒和待办。", "Used to create reminders and tasks.")
         case .contacts:
             return tr("用于保存和更新联系人。", "Used to save and update contacts.")
+        case .health:
+            return tr("用于读取步数、距离、活动能量、心率、睡眠、运动、体重和心率变异性，并在本地生成摘要。", "Used to read steps, distance, active energy, heart rate, sleep, workouts, weight, and HRV for local summaries.")
         }
     }
 }
@@ -1741,11 +1721,29 @@ private enum SettingsStyle {
     static let muted = Color(light: "8B857C", dark: "A89F94")
     static let tertiary = Color(light: "B9B0A5", dark: "7F766A")
     static let hairline = Color(light: "E8E2D8", dark: "373128")
+    static let downloadProgress = Color(light: "C39660", dark: "C99B68")
     static let controlFill = Color(light: "ECE8E0", dark: "2C2821").opacity(0.76)
     static let selectedFill = Color(light: "FFFFFF", dark: "211E19").opacity(0.72)
     static let segmentThumb = Color(light: "FFFFFF", dark: "3A342B").opacity(0.88)
     static let pressedFill = Color(light: "F0ECE5", dark: "383229")
     static let danger = Color(light: "9E554D", dark: "E08B80")
+}
+
+private struct SettingsDownloadProgressBar: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(SettingsStyle.hairline)
+                Capsule()
+                    .fill(SettingsStyle.downloadProgress)
+                    .frame(width: max(3, proxy.size.width * min(1, max(0, fraction))))
+            }
+        }
+        .frame(height: 3)
+    }
 }
 
 // MARK: - CustomSegmentedPicker
