@@ -14,7 +14,7 @@
 
 <div align="center">
 
-[核心能力](#核心能力) · [内置 Skill](#内置-skill-示例) · [技术文章](#技术文章) · [快速开始](#快速开始) · [自定义 Skill](#自定义-skill) · [常见问题](#常见问题) · [后续计划](#后续计划)
+[核心能力](#核心能力) · [内置 Skill](#内置-skill-示例) · [技术文章](#技术文章) · [快速开始](#快速开始) · [Mac 远程](#7-使用-mac-客户端远程推理) · [自定义 Skill](#自定义-skill) · [常见问题](#常见问题) · [后续计划](#后续计划)
 
 </div>
 
@@ -28,6 +28,13 @@
 PhoneClaw 是一个运行在 iPhone 上的本地私人 Agent。内置 Gemma 4 和 MiniCPM-V 多个本地模型，在端侧完成推理和 Skill 调用，无需云端 API 或外部模型接入，不上传聊天内容。
 
 ## 最新更新
+
+**2026-06-08**
+
+- 新增 Mac 客户端 PhoneClaw Gateway：在 Mac 上常驻运行，通过 Bonjour 自动广播局域网服务，让 iPhone 端可以配对并使用 Mac 上的 Ollama、Codex CLI 或 Antigravity CLI 作为远程推理源
+- iPhone 设置页新增「Mac 远程推理」入口：搜索同一局域网内的 Mac、在 Mac 端审批配对、选择 Mac 上的模型后即可回到聊天页使用
+- 远程模型只在用户主动配对并选择后启用；如果 Mac 端选择 Ollama，推理留在你的 Mac 上；如果选择 CLI 或其它上游 provider，请以对应 provider 的数据处理方式为准
+- 使用方法：先下载 [PhoneClawGateway-macOS-v0.1.0.zip](https://github.com/kellyvv/PhoneClaw/releases/download/mac-gateway-v0.1.0/PhoneClawGateway-macOS-v0.1.0.zip)，解压打开 `PhoneClawGateway.app`，允许本地网络权限，再到 iPhone 的「Mac 远程推理」里配对；详细步骤见 [使用 Mac 客户端远程推理](#7-使用-mac-客户端远程推理)
 
 **2026-06-05**
 
@@ -122,6 +129,8 @@ PhoneClaw 是一个运行在 iPhone 上的本地私人 Agent。内置 Gemma 4 �
 
 **本地私人 Agent**：在 iPhone 上完成推理和 Skill 调用，可用自然语言处理日历、提醒事项、通讯录、剪贴板、健康数据等本机任务。
 
+**Mac 远程推理**：可选配对同一局域网内的 Mac，通过 PhoneClaw Gateway 使用 Mac 上的 Ollama、Codex CLI 或 Antigravity CLI 模型，让手机端保留原生体验，同时把重模型推理放到 Mac 上执行。
+
 **图片理解与 LIVE 视觉**：拍照或从相册选图后直接提问，也可以在 LIVE 模式下开启摄像头，让模型实时理解当前画面。
 
 **个人数据分析**：读取日程、健康数据、联系人、提醒事项等本机数据，生成摘要、忙闲分析和下一步建议。数据默认只在设备端处理。
@@ -136,7 +145,7 @@ PhoneClaw 是一个运行在 iPhone 上的本地私人 Agent。内置 Gemma 4 �
 
 **模型管理与断点续传**：Gemma 主模型和 LIVE 语音模型支持手机端下载、取消、继续下载和失败重试，也可以在构建时打包进 App。
 
-**默认离线与隐私边界**：推理和本机 Skill 调用默认在设备端完成；只有用户明确使用联网搜索或读取网页时才访问公开网络。聊天内容、图片和个人数据不上传到 PhoneClaw 服务器。
+**默认离线与隐私边界**：推理和本机 Skill 调用默认在设备端完成；只有用户明确使用联网搜索、读取网页或配对 Mac 远程推理时才离开 iPhone。聊天内容、图片和个人数据不上传到 PhoneClaw 服务器；Mac 远程推理会把本轮请求发送到你配对的 Mac，后续是否访问外部服务取决于 Mac 端所选 provider。
 
 **移动端内存优化**：内置模型切换、System Prompt 编辑、缓存清理和历史裁剪，针对 iPhone 本地推理的内存限制做了优化。
 
@@ -300,6 +309,50 @@ open PhoneClaw.xcworkspace
 把刚才那段话翻译成英文
 ```
 
+### 7. 使用 Mac 客户端远程推理
+
+Mac 客户端用于把同一局域网内的 Mac 作为 iPhone 的远程推理源。手机端仍然使用 PhoneClaw 的聊天界面和 Skill 系统，模型推理请求会发到你配对的 Mac。
+
+**方式 A：下载 release（推荐）**
+
+1. 下载 [PhoneClawGateway-macOS-v0.1.0.zip](https://github.com/kellyvv/PhoneClaw/releases/download/mac-gateway-v0.1.0/PhoneClawGateway-macOS-v0.1.0.zip)
+2. 解压后打开 `PhoneClawGateway.app`
+3. 首次打开时，macOS 会询问「本地网络」权限，请选择允许
+4. 如果 macOS 阻止首次启动，请在 Finder 里右键 `PhoneClawGateway.app`，选择「打开」
+
+Gateway 默认监听 `18080` 端口，并通过 Bonjour 广播 `_phoneclaw-llm._tcp` 服务。
+
+**方式 B：从源码构建**
+
+```bash
+cd PhoneClawGateway
+bash build-app.sh
+open PhoneClawGateway.app
+```
+
+从源码构建后同样需要允许 macOS 的「本地网络」权限。
+
+**配置 Mac 端运行源**
+
+1. 打开 `PhoneClawGateway.app`
+2. 在主窗口里选择运行源：Ollama、Codex CLI 或 Antigravity CLI
+3. 如果使用 Ollama，先安装并启动 Ollama，再下载一个模型，例如：
+
+```bash
+ollama pull gemma3:4b
+```
+
+4. 回到 Gateway 点扫描，确认模型出现在列表里
+
+**在 iPhone 上配对并使用**
+
+1. 确保 iPhone 和 Mac 在同一个局域网
+2. 打开 PhoneClaw → 右上角滑杆 →「Mac 远程推理」
+3. 点局域网内的 Mac，在 Mac 客户端弹窗里点「允许」
+4. 配对成功后选择 Mac 上的模型，回到聊天页即可使用
+
+远程模型会出现在模型选择器的「远程模型」分组里。若手机搜不到 Mac，优先检查：Mac 客户端是否正在运行、本地网络权限是否允许、两台设备是否在同一 Wi-Fi、系统防火墙是否允许 `PhoneClawGateway.app` 接收局域网连接。
+
 ## 自定义 Skill
 
 新增一个 Skill 的最小成本方式，是在 `Skills/Library/<skill-id>/` 下增加一个 `SKILL.md`，或者运行时写到应用沙盒：
@@ -353,6 +406,9 @@ examples:
 
 为什么提醒事项创建失败？
 最新代码会先尝试复用现有提醒列表；如果系统里没有可写列表，会再尝试自动创建一个 PhoneClaw 提醒列表。如果这一步仍失败，通常是系统提醒源本身不可写。
+
+为什么 iPhone 搜不到 Mac 客户端？
+先确认 `PhoneClawGateway.app` 正在运行，并且 macOS 已允许本地网络权限；iPhone 和 Mac 需要在同一个局域网。若仍搜不到，检查 macOS 防火墙是否允许该 App 接收连接，或者重新运行 `bash PhoneClawGateway/build-app.sh` 后再打开生成的 App。
 
 ## 后续计划
 
